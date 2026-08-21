@@ -152,11 +152,16 @@ typedef struct {
 } Model;
 
 /* -------------------------------------------------------------- registry */
+struct TicketType;
+
 typedef struct {
-    Vendor *vendor; size_t nvendor;
-    Model  *model;  size_t nmodel;
-    char    err[RB_ERR_MAX];
+    Vendor            *vendor; size_t nvendor;
+    Model             *model;  size_t nmodel;
+    struct TicketType *ticket; size_t nticket;
+    char               err[RB_ERR_MAX];
 } Specs;
+
+const struct TicketType *spec_ticket(const Specs *s, const char *id);
 
 /* Load every spec. `dir` overrides the specs built into the binary, which is
  * how an author iterates without a rebuild; pass NULL for the embedded set.

@@ -55,7 +55,7 @@ endpoints:
     required: [login, user_ref, display_name, dept]
     idempotent_on: [login]
     latency_ms: 400
-    failure_modes: [transient, timeout_after_commit]
+    failure_modes: [timeout_after_commit]
     doc: "Create an account. The login must be unique across every account the directory has ever held, including departed ones."
     examples:
       - "api.call {inst} create_account login={newlogin} user_ref={user} display_name=Test dept=engineering status=active"
@@ -66,7 +66,6 @@ endpoints:
     fields: [login, display_name, dept, status]
     required: [login]
     latency_ms: 300
-    failure_modes: [transient]
     doc: "Change an account's department, display name or status."
     examples:
       - "api.call {inst} update_account login={login} status=active"
@@ -118,7 +117,7 @@ endpoints:
     idempotent_on: [login, group]
     references: { login: accounts, group: groups }
     latency_ms: 350
-    failure_modes: [transient, timeout_after_commit]
+    failure_modes: [timeout_after_commit]
     doc: "Put an account in a group. Both must already exist."
     examples:
       - "api.call {inst} add_member login={login} group=dept-engineering"

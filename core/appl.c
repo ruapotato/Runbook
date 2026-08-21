@@ -13,6 +13,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdarg.h>
 
 /* ------------------------------------------------------------ collections */
 static uint64_t key_hash(const char *const *vals, int n)
@@ -78,6 +79,16 @@ void rec_set(Rec *r, const char *k, const char *v)
     snprintf(r->f[r->nf].k, RB_NAME_MAX, "%s", k);
     snprintf(r->f[r->nf].v, RB_VAL_MAX, "%s", v);
     r->nf++;
+}
+
+void rec_setf(Rec *r, const char *k, const char *fmt, ...)
+{
+    char tmp[RB_VAL_MAX];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(tmp, sizeof tmp, fmt, ap);
+    va_end(ap);
+    rec_set(r, k, tmp);
 }
 
 Rec *coll_find(Coll *c, const char *const *keyvals, int nkey)

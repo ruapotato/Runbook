@@ -8,6 +8,7 @@
  * that fidelity to a real protocol buys nothing and costs everything.
  */
 #include "proto.h"
+#include "ticket.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -141,6 +142,12 @@ static void cmd_help(Buf *out)
         "user.offboard <id>            idempotent\n"
         "depts                         valid department names\n"
         "\n"
+        "ticket.list [open|closed|all] [n]   the queue; reading it settles it\n"
+        "ticket.get <id>               one ticket\n"
+        "ticket.check <id>             every acceptance check, and why it fails\n"
+        "ticket.stats                  queue depth, SLA, who closed what\n"
+        "ticket.types                  the types that exist, and what they verify\n"
+        "\n"
         "models                        every appliance model there is a spec for\n"
         "appl.list                     appliances installed in this org\n"
         "appl.info <instance>          one appliance: load, record counts\n"
@@ -214,6 +221,101 @@ bool proto_exec(Session *s, const char *line, Buf *out)
     if (!strcmp(cmd, "depts")) {
         buf_puts(out, "+OK depts\n");
         for (int i = 0; i < RB_DEPT__N; i++) buf_printf(out, "%s\n", rb_dept_name[i]);
+        buf_puts(out, ".\n");
+        return true;
+    }
+
+    /* ---------------------------------------------------------- tickets */
+    /* READING THE QUEUE SETTLES IT FIRST, and costs nothing.
+     *
+     * Handoff decision 9: tickets close by state verification, never by
+     * player assertion. There is deliberately no "resolve" verb here, and
+     * adding one would end the game. What there is instead is this: whenever
+     * anyone looks at the queue, the game re-checks every open ticket against
+     * the world, and the ones whose work is done are already closed by the
+     * time the player sees the list.
+     *
+     * Verification is free because it is the oracle, not a resource. Charging
+     * for it would teach players not to check their work, which is precisely
+     * backwards. */
+    if (!strcmp(cmd, "ticket.list")) {
+        world_ticket_sweep(w);
+        bool closed = argc > 1 && !strcmp(argv[1], "closed");
+        bool all    = argc > 1 && !strcmp(argv[1], "all");
+        int limit = 0;
+        for (int i = 1; i < argc; i++) if (argv[i][0] >= '0' && argv[i][0] <= '9') limit = atoi(argv[i]);
+        buf_puts(out, "+OK tickets\n");
+        int shown = 0;
+        for (size_t i = 0; i < w->ntick; i++) {
+            bool is_open = w->tick[i].closed_day < 0;
+            if (!all && (is_open == closed)) continue;
+            if (limit && shown >= limit) break;
+            ticket_render(w, &w->tick[i], out);
+            buf_putc(out, '\n');
+            shown++;
+        }
+        buf_puts(out, ".\n");
+        return true;
+    }
+
+    if (!strcmp(cmd, "ticket.get")) {
+        if (argc < 2) { err(out, "ticket.get <id>"); return true; }
+        world_ticket_sweep(w);
+        Ticket *t = world_ticket_find(w, argv[1]);
+        if (!t) { err(out, "no such ticket: %s", argv[1]); return true; }
+        buf_puts(out, "+OK ticket\n");
+        ticket_render(w, t, out);
+        buf_puts(out, "\n.\n");
+        return true;
+    }
+
+    /* WHY IT WILL NOT CLOSE. Every check, its documentation, and for the ones
+     * that fail, the reason. A ticket that refuses to close and will not say
+     * why is the single most frustrating thing this game could do, and the
+     * temptation to hide the reason -- to make the player "work it out" -- is
+     * the diagnosis-as-content trap that killed every earlier attempt in this
+     * lineage (handoff §2). The difficulty is the volume. It is never this. */
+    if (!strcmp(cmd, "ticket.check")) {
+        if (argc < 2) { err(out, "ticket.check <id>"); return true; }
+        Ticket *t = world_ticket_find(w, argv[1]);
+        if (!t) { err(out, "no such ticket: %s", argv[1]); return true; }
+        Verdict v;
+        ticket_evaluate(w, t, &v);
+        if (v.all) world_ticket_sweep(w);
+        buf_printf(out, "+OK %s %s\n", t->id, v.all ? "passes" : "does not pass yet");
+        for (int i = 0; i < v.n; i++) {
+            /* n/a, never PASS. A check that did not apply has proved nothing,
+             * and showing it as a pass would teach the player to read a green
+             * column that is partly decoration. */
+            const char *mark = v.skipped[i] ? " n/a" : (v.passed[i] ? "PASS" : "    ");
+            buf_printf(out, "%s %-28s %s%s%s\n", mark,
+                       t->type->check[i].id, t->type->check[i].doc,
+                       (v.passed[i] && !v.skipped[i]) ? "" : "  -- ",
+                       (v.passed[i] && !v.skipped[i]) ? "" : v.why[i]);
+        }
+        buf_puts(out, ".\n");
+        return true;
+    }
+
+    if (!strcmp(cmd, "ticket.stats")) {
+        world_ticket_sweep(w);
+        buf_puts(out, "+OK stats\n");
+        world_ticket_stats(w, out);
+        buf_puts(out, "\n.\n");
+        return true;
+    }
+
+    if (!strcmp(cmd, "ticket.types")) {
+        buf_puts(out, "+OK ticket types\n");
+        for (size_t i = 0; i < w->specs->nticket; i++) {
+            const TicketType *tt = &w->specs->ticket[i];
+            buf_printf(out, "{\"id\":\"%s\",\"subject\":\"%s\",\"sla_minutes\":%d,\"doc\":\"%s\","
+                            "\"acceptance\":[", tt->id, tt->subject_kind, tt->sla_minutes, tt->doc);
+            for (int c = 0; c < tt->ncheck; c++)
+                buf_printf(out, "%s{\"id\":\"%s\",\"doc\":\"%s\"}", c ? "," : "",
+                           tt->check[c].id, tt->check[c].doc);
+            buf_puts(out, "]}\n");
+        }
         buf_puts(out, ".\n");
         return true;
     }

@@ -7,6 +7,7 @@
  * the endpoint and the field, because "spec error" is not a bug report.
  */
 #include "spec.h"
+#include "ticket.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -290,6 +291,8 @@ static bool load_model(Ctx *c, const YNode *root, Model *m)
     return true;
 }
 
+static bool load_ticket(Ctx *c, const Specs *s, const YNode *root, TicketType *t);
+
 /* ----------------------------------------------------------------- files */
 typedef struct { char *name; char *text; } SrcFile;
 
@@ -358,51 +361,62 @@ Specs *specs_load(const char *dir, char *err, size_t errcap)
     Ctx c = { err, errcap, "", false };
     bool ok = true;
 
-    /* Two passes: vendors first, so a model can be checked against its
-     * vendor no matter what order the files came in. */
-    for (int pass = 0; pass < 2 && ok; pass++) {
+    /* THREE PASSES, IN DEPENDENCY ORDER. Vendors, then the models that name
+     * them, then the ticket types whose acceptance checks are validated
+     * against those models. File order on disk must not decide whether a spec
+     * loads, and readdir order is not even stable. */
+    for (int pass = 0; pass < 3 && ok; pass++) {
         for (size_t i = 0; i < nsrc && ok; i++) {
             c.file = src[i].name;
             char perr[RB_ERR_MAX];
             YNode *root = yaml_parse(src[i].text, perr, sizeof perr);
             if (!root) { snprintf(err, errcap, "%s: %s", src[i].name, perr); ok = false; break; }
 
-            bool is_vendor = y_has(root, "archetype");
-            if (is_vendor == (pass == 0)) {
-                if (pass == 0) {
-                    s->vendor = rb_realloc(s->vendor, (s->nvendor + 1) * sizeof *s->vendor);
-                    ok = load_vendor(&c, root, &s->vendor[s->nvendor]);
+            int kind = y_has(root, "archetype") ? 0 : (y_has(root, "ticket") ? 2 : 1);
+            if (kind != pass) { yaml_free(root); continue; }
+
+            if (pass == 0) {
+                s->vendor = rb_realloc(s->vendor, (s->nvendor + 1) * sizeof *s->vendor);
+                ok = load_vendor(&c, root, &s->vendor[s->nvendor]);
+                if (ok) {
+                    for (size_t v = 0; v < s->nvendor; v++)
+                        if (!strcmp(s->vendor[v].id, s->vendor[s->nvendor].id))
+                            ok = sfail(&c, "two vendors called %s", s->vendor[v].id);
+                    if (ok) s->nvendor++;
+                }
+            } else if (pass == 1) {
+                s->model = rb_realloc(s->model, (s->nmodel + 1) * sizeof *s->model);
+                ok = load_model(&c, root, &s->model[s->nmodel]);
+                if (ok) {
+                    Model *m = &s->model[s->nmodel];
+                    if (!spec_vendor(s, m->vendor))
+                        ok = sfail(&c, "model %s names vendor '%s', which has no spec", m->id, m->vendor);
+                    for (size_t k = 0; ok && k < s->nmodel; k++)
+                        if (!strcmp(s->model[k].id, m->id)) ok = sfail(&c, "two models called %s", m->id);
                     if (ok) {
-                        for (size_t v = 0; v < s->nvendor; v++)
-                            if (!strcmp(s->vendor[v].id, s->vendor[s->nvendor].id))
-                                ok = sfail(&c, "two vendors called %s", s->vendor[v].id);
-                        if (ok) s->nvendor++;
+                        /* The vendor decides the theme unless the model
+                         * overrides it. Handoff §14: if a dozen appliances
+                         * share one look, the vendor-quality mechanic dies
+                         * quietly, so a model without a theme inherits one
+                         * rather than defaulting to Godot grey. */
+                        if (!m->theme[0]) cpstr(m->theme, sizeof m->theme, spec_vendor(s, m->vendor)->theme);
+                        /* The cheap vendor has no API. Stated in one place --
+                         * here -- so a model file cannot accidentally grant
+                         * one. */
+                        if (spec_vendor(s, m->vendor)->arch == VEN_CHEAP && m->has_api)
+                            ok = sfail(&c, "model %s claims an API, but vendor %s is the cheap one",
+                                       m->id, m->vendor);
+                        if (ok) s->nmodel++;
                     }
-                } else {
-                    s->model = rb_realloc(s->model, (s->nmodel + 1) * sizeof *s->model);
-                    ok = load_model(&c, root, &s->model[s->nmodel]);
-                    if (ok) {
-                        Model *m = &s->model[s->nmodel];
-                        if (!spec_vendor(s, m->vendor))
-                            ok = sfail(&c, "model %s names vendor '%s', which has no spec", m->id, m->vendor);
-                        for (size_t k = 0; ok && k < s->nmodel; k++)
-                            if (!strcmp(s->model[k].id, m->id)) ok = sfail(&c, "two models called %s", m->id);
-                        if (ok) {
-                            /* The vendor decides the theme unless the model
-                             * overrides it. Handoff §14: if a dozen appliances
-                             * share one look, the vendor-quality mechanic dies
-                             * quietly, so a model without a theme inherits one
-                             * rather than defaulting to Godot grey. */
-                            if (!m->theme[0]) cpstr(m->theme, sizeof m->theme, spec_vendor(s, m->vendor)->theme);
-                            /* The cheap vendor has no API. Stated in one place
-                             * — here — so a model file cannot accidentally
-                             * grant one. */
-                            if (spec_vendor(s, m->vendor)->arch == VEN_CHEAP && m->has_api)
-                                ok = sfail(&c, "model %s claims an API, but vendor %s is the cheap one",
-                                           m->id, m->vendor);
-                            if (ok) s->nmodel++;
-                        }
-                    }
+                }
+            } else {
+                s->ticket = rb_realloc(s->ticket, (s->nticket + 1) * sizeof *s->ticket);
+                ok = load_ticket(&c, s, root, &s->ticket[s->nticket]);
+                if (ok) {
+                    for (size_t k = 0; k < s->nticket; k++)
+                        if (!strcmp(s->ticket[k].id, s->ticket[s->nticket].id))
+                            ok = sfail(&c, "two ticket types called %s", s->ticket[k].id);
+                    if (ok) s->nticket++;
                 }
             }
             yaml_free(root);
@@ -421,6 +435,7 @@ void specs_free(Specs *s)
     if (!s) return;
     rb_free(s->vendor);
     rb_free(s->model);
+    rb_free(s->ticket);
     rb_free(s);
 }
 
@@ -446,4 +461,126 @@ const CollSpec *model_coll(const Model *m, const char *name)
 {
     for (int i = 0; i < m->ncoll; i++) if (!strcmp(m->coll[i].name, name)) return &m->coll[i];
     return NULL;
+}
+
+/* ---------------------------------------------------------- ticket types */
+/* Loaded here rather than in ticket.c because a ticket type is a spec file
+ * like any other, validated by the same pass, and reported by the same error
+ * path. The checks are validated against the appliance models: a ticket that
+ * verifies a collection no appliance has is a ticket that can never close,
+ * and finding that out in a playtest is a wasted afternoon.
+ */
+
+const struct TicketType *spec_ticket(const Specs *s, const char *id)
+{
+    for (size_t i = 0; i < s->nticket; i++) if (!strcmp(s->ticket[i].id, id)) return &s->ticket[i];
+    return NULL;
+}
+
+/* Does any model of this kind have this collection, with these fields? */
+static bool kind_has(const Specs *s, const char *kind, const char *coll,
+                     const Field *where, int nwhere, const char *field)
+{
+    for (size_t i = 0; i < s->nmodel; i++) {
+        const Model *m = &s->model[i];
+        if (strcmp(m->kind, kind)) continue;
+        const CollSpec *cs = model_coll(m, coll);
+        if (!cs) continue;
+        bool ok = true;
+        for (int f = 0; f < nwhere && ok; f++)
+            if (!in_table((char (*)[RB_NAME_MAX])cs->field, cs->nfield, where[f].k)) ok = false;
+        if (field && !in_table((char (*)[RB_NAME_MAX])cs->field, cs->nfield, field)) ok = false;
+        if (ok) return true;
+    }
+    return false;
+}
+
+static bool load_ticket(Ctx *c, const Specs *s, const YNode *root, TicketType *t)
+{
+    memset(t, 0, sizeof *t);
+    cpstr(t->id,           sizeof t->id,           y_str(root, "ticket", ""));
+    cpstr(t->subject_kind, sizeof t->subject_kind, y_str(root, "subject", "user"));
+    cpstr(t->description,  sizeof t->description,  y_str(root, "description", ""));
+    cpstr(t->doc,          sizeof t->doc,          y_str(root, "doc", ""));
+    t->sla_minutes = y_int(root, "sla_minutes", 480);
+    t->weight      = y_int(root, "weight", 100);
+    if (!t->id[0]) return sfail(c, "a ticket file needs a 'ticket:' id");
+    if (!t->description[0]) return sfail(c, "ticket %s has no description", t->id);
+    if (t->sla_minutes < 1) return sfail(c, "ticket %s has a nonsense SLA", t->id);
+
+    const YNode *acc = y_get(root, "acceptance");
+    size_t n = y_count(acc);
+    if (!n) return sfail(c, "ticket %s has no acceptance checks; it could never close", t->id);
+    if (n > TK_MAX_CHECKS) return sfail(c, "ticket %s has %zu checks; the limit is %d", t->id, n, TK_MAX_CHECKS);
+
+    for (size_t i = 0; i < n; i++) {
+        const YNode *cn = y_at(acc, i);
+        Check *ck = &t->check[t->ncheck];
+        memset(ck, 0, sizeof *ck);
+        cpstr(ck->id,        sizeof ck->id,        y_str(cn, "id", ""));
+        cpstr(ck->appliance, sizeof ck->appliance, y_str(cn, "appliance", ""));
+        cpstr(ck->coll,      sizeof ck->coll,      y_str(cn, "collection", ""));
+        cpstr(ck->field,     sizeof ck->field,     y_str(cn, "field", ""));
+        cpstr(ck->value,     sizeof ck->value,     y_str(cn, "value", ""));
+        cpstr(ck->doc,       sizeof ck->doc,       y_str(cn, "doc", ""));
+        cpstr(ck->when,      sizeof ck->when,      y_str(cn, "when", ""));
+        cpstr(ck->unless,    sizeof ck->unless,    y_str(cn, "unless", ""));
+        /* `bind` names a record for later checks; `of` refers to one already
+         * named. They share a slot because a check never does both. */
+        cpstr(ck->bind,      sizeof ck->bind,      y_str(cn, "bind", y_str(cn, "of", "")));
+        if (!ck->id[0]) return sfail(c, "ticket %s: a check has no id", t->id);
+        if (!ck->doc[0]) return sfail(c, "ticket %s: check %s is undocumented, and the player is shown these", t->id, ck->id);
+
+        const char *k = y_str(cn, "check", "");
+        if      (!strcmp(k, "exists"))     ck->kind = CHK_EXISTS;
+        else if (!strcmp(k, "absent"))     ck->kind = CHK_ABSENT;
+        else if (!strcmp(k, "equals"))     ck->kind = CHK_EQUALS;
+        else if (!strcmp(k, "convention")) ck->kind = CHK_CONVENTION;
+        else return sfail(c, "ticket %s: check %s has an unknown kind '%s'", t->id, ck->id, k);
+
+        const YNode *wh = y_get(cn, "where");
+        if (wh && wh->kind == Y_MAP) {
+            if ((int)wh->npair > TK_MAX_WHERE) return sfail(c, "ticket %s: check %s matches on too many fields", t->id, ck->id);
+            for (size_t f = 0; f < wh->npair; f++) {
+                cpstr(ck->where[ck->nwhere].k, RB_NAME_MAX, wh->pair[f].key);
+                cpstr(ck->where[ck->nwhere].v, RB_VAL_MAX,
+                      wh->pair[f].val->kind == Y_SCALAR ? wh->pair[f].val->scalar : "");
+                ck->nwhere++;
+            }
+        } else if (wh) {
+            return sfail(c, "ticket %s: check %s: where must be a mapping", t->id, ck->id);
+        }
+
+        if (ck->kind == CHK_EXISTS || ck->kind == CHK_ABSENT) {
+            if (!ck->appliance[0] || !ck->coll[0])
+                return sfail(c, "ticket %s: check %s needs an appliance and a collection", t->id, ck->id);
+            if (!ck->nwhere)
+                return sfail(c, "ticket %s: check %s matches every record in %s, which proves nothing",
+                             t->id, ck->id, ck->coll);
+            /* THE CHECK THAT MAKES THE OTHERS WORTH HAVING: a ticket whose
+             * acceptance names a collection no appliance has can never close,
+             * and a ticket that can never close is a queue that only grows.
+             * Caught here, at load, rather than in a playtest. */
+            if (!kind_has(s, ck->appliance, ck->coll, ck->where, ck->nwhere, NULL))
+                return sfail(c, "ticket %s: check %s wants %s/%s with those fields; no appliance model provides it",
+                             t->id, ck->id, ck->appliance, ck->coll);
+        } else {
+            if (!ck->bind[0])
+                return sfail(c, "ticket %s: check %s needs 'of:' naming a record an earlier check bound", t->id, ck->id);
+            if (!ck->field[0])
+                return sfail(c, "ticket %s: check %s needs a field", t->id, ck->id);
+            bool bound = false;
+            for (int e = 0; e < t->ncheck; e++)
+                if (!strcmp(t->check[e].bind, ck->bind) && t->check[e].kind == CHK_EXISTS) bound = true;
+            if (!bound)
+                return sfail(c, "ticket %s: check %s refers to '%s', which no earlier check binds",
+                             t->id, ck->id, ck->bind);
+            if (ck->kind == CHK_EQUALS && !ck->value[0])
+                return sfail(c, "ticket %s: check %s has no value to compare against", t->id, ck->id);
+        }
+        for (int e = 0; e < t->ncheck; e++)
+            if (!strcmp(t->check[e].id, ck->id)) return sfail(c, "ticket %s: two checks called %s", t->id, ck->id);
+        t->ncheck++;
+    }
+    return true;
 }

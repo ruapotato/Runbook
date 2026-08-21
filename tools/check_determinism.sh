@@ -32,16 +32,22 @@ SEED=${SEED:-424242}
 # attrition and the weekly waves only have room to drift apart over months of
 # simulated time, and drift is what this gate is looking for.
 #
-# 120 days is deliberately PAST the end of the game — Act III finishes around
-# 4,000 users and this run reaches roughly ten times that. A gate that stops
-# exactly where the design stops cannot tell you the difference between "it
-# reproduces" and "it has not had room to diverge yet". It costs a quarter of
-# a second.
-DAYS=${DAYS:-120}
+# 45 days is a whole game: the reference agent plays from forty users through
+# the Act I wall and the whole of Act II, closing about a thousand tickets. It
+# used to be 120 days of an UNPLAYED world, which was both less meaningful and
+# far slower -- nobody works the queue, so every ticket goes past its SLA and
+# gets chased forever, and the gate spent minutes hashing a queue that exists
+# only because there is no player.
+DAYS=${DAYS:-45}
 
 [ -x "$BIN" ] || { echo "determinism: $BIN not built"; exit 1; }
 
-run() { "$BIN" --seed "$1" --days "$DAYS" --out "$2" >/dev/null 2>&1; }
+# A PLAYED RUN, NOT A GROWN ONE. The reference agent works the queue for
+# $DAYS simulated days -- thousands of appliance calls, every failure mode
+# rolled, every retry taken -- and the world that comes out the other end is
+# what gets compared. Hashing a world nobody touched would prove that the
+# growth model is deterministic and nothing else.
+run() { "$BIN" --play --seed "$1" --days "$DAYS" --out "$2" >/dev/null 2>&1; }
 
 fail=0
 
@@ -109,7 +115,7 @@ elif ! make -s windows >/dev/null 2>&1; then
     echo "determinism: FAIL  the Windows cross-build broke"
     fail=1
 else
-    WINEDEBUG=-all WINEPREFIX="$WINEPFX" "$WINE64" build/win/runbook.exe \
+    WINEDEBUG=-all WINEPREFIX="$WINEPFX" "$WINE64" build/win/runbook.exe --play \
         --seed "$SEED" --days "$DAYS" --out "$WORK/win.json" >/dev/null 2>&1 || true
     if [ -f "$WORK/win.json" ] && cmp -s "$WORK/a.json" "$WORK/win.json"; then
         echo "determinism: PASS  Linux and Windows agree byte-for-byte"

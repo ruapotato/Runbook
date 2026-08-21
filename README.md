@@ -8,19 +8,40 @@ in this file that disagrees with it is stale, and the handoff wins.
 
 ## Where this is
 
-**M1.** An org, one appliance, and the API. No tickets and no client yet.
+**M2, and most of M5.** Tickets, acceptance, three appliances, and the
+balance harness. No client yet — and per handoff §15 that is the order: *the
+game should be provably playable headless before it is visible.* It is.
 
-The org has forty people and a directory of record with an account, a
-department group and a membership for each of them — all of it there before
-the player arrives, and all of it attributed to nobody. You can onboard a
-forty-first over the socket, by hand through a form or by script through the
-API, and the directory will argue with you about it: logins collide,
-memberships need their account to exist first, a retried create is not a
-duplicate, and one write in two hundred commits and then times out.
+The org has forty people, fully provisioned across a directory, a mail server
+and a file server — all of it there before the player arrives, all of it
+attributed to nobody. It grows about 6% a day. Every hire raises an onboarding
+ticket with seven acceptance checks, and **the only way to close one is to
+make the checks true**. There is no "mark as done" verb; `--health` asserts
+by name that there never will be.
 
 A **person and their account are different objects**, and that is the game. A
-User is what HR knows. Their login, groups and (later) mailbox and home folder
-live in appliances, and putting them there is the work.
+`User` is what HR knows: hired, into a department, on a day. Their login,
+groups, mailbox, home folder and share access live in appliances, and putting
+them there is the work.
+
+```
+$ ./build/runbook --exec 'ticket.check TCK-00007'
++OK TCK-00007 does not pass yet
+PASS account_exists            They have an account in the directory of record.
+PASS login_follows_convention  The login is first initial plus family name...
+     account_active            The account is active, not left in whatever
+                               state it was created in.  -- status is
+                               contractor, not active
+PASS in_department_group       They are in their department's group.
+...
+```
+
+That one is a returning contractor. Their account already existed, so a script
+that relies on `create` being idempotent gets a 200 and moves on, leaving
+somebody whose account exists and does not work. Idempotency is not enough;
+you have to reconcile. There is nothing to *diagnose* — the ticket said
+`"rehire":"yes"` from the moment it opened — there is something to *handle*,
+and that is the difference the whole design rests on (§2).
 
 ## Build and check
 
@@ -53,8 +74,8 @@ line, so a dumb client can find the end without parsing the body.
 | `--health` | Specs load and validate; a pristine org boots with its directory intact and following its own naming convention; every endpoint in every spec responds; idempotency, ordering and spent logins behave; every verb `help` advertises dispatches | live |
 | determinism | Same seed reproduces byte-for-byte over 120 simulated days; a different seed diverges; `-O0` and `-O2` agree; the Linux and Windows builds agree | live |
 | `--mancheck` | Every example in every generated manual executes against a live world; every endpoint is documented | live |
-| `--naive` | The naive bot's failure rate stays inside the handoff §8 band | M5 |
-| `--play` | A reference agent plays all three acts over the API | M2 |
+| `--play` | A reference agent plays through the acts over the API, and must keep up: ≤2% of tickets failed, ≥95% within SLA. Reports per-act wall time and where it stalled | live |
+| `--naive-gate` | §8's degeneracy band, over three seeds: a bot that does not branch must fail ≤5% of tickets at the Act I wall and ≥35% by the end of Act II | live |
 | `--vacation N` | N days, zero input, against §12 | M7 |
 
 `--health` prints `PENDING` lines for the parts of its handoff definition that
@@ -104,9 +125,47 @@ refuses a spec that documents an endpoint it cannot dispatch, a form that
 offers a field its endpoint will not take, or a model claiming an API from a
 vendor that does not sell one.
 
-## What M2 does next
+## The balance harness
 
-Tickets: typed objects with `acceptance` checks the game evaluates against
-world state. The player never marks anything done. The seam is already cut —
-`world_day_advance()` computes the day's hires and applies them in a separate
-loop, and that loop is where the ticket generator lands.
+Nothing in this game is tuned by argument. The growth model, the exception
+ramp, the failure rates and the size of the surname table were all set by
+running `--play` and `--naive-gate` and reading the numbers:
+
+```sh
+make play     # a competent script must keep up
+make naive    # an incompetent one must not
+```
+
+Between them they found a runaway follow-up loop that grew the queue 1.4× a
+day regardless of play, a use-after-free that only appeared once the queue got
+big, and a collision space that was three times smaller than it looked. Every
+constant they settled carries a comment saying so.
+
+## Writing a ticket type
+
+One YAML file, like an appliance. Acceptance checks are declarative predicates
+over appliance collections, validated at load against the appliance specs — a
+ticket whose acceptance names a collection no appliance has could never close,
+and that is caught at startup rather than in a playtest.
+
+```yaml
+  - id: in_second_group
+    check: exists
+    when: also_dept          # only for tickets carrying that field
+    appliance: directory     # any instance of the kind, not a named one
+    collection: memberships
+    where: { login: "{account.login}", group: "dept-{also_dept}" }
+    doc: "They are also in the second department they were hired into."
+```
+
+`{account.login}` is bound by an earlier check, which is how acceptance can
+verify work whose exact shape was the player's decision. A check that does not
+apply reports `n/a`, never `PASS`.
+
+## What M3 does next
+
+The Godot client: a window-manager shell, a generic form renderer driven by
+`appl.forms`, per-vendor themes. Everything it needs is already served over
+the API, because the client is a client (decision 7). M3 and M4 are the two
+milestones that need a human at a keyboard — the questions they answer are
+*is Act I pleasant* and *does the relief land*, and no gate can answer those.

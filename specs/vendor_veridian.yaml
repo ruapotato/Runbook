@@ -11,5 +11,19 @@ archetype: good
 theme: veridian_slate
 cost: 240
 rate_limit: 60
-transient_bp: 200          # 2.0% — the §10 baseline, at the low end
+transient_bp: 0            # none. See the note below.
+# THE GOOD VENDOR DOES NOT DROP CALLS, and that is not generosity, it is the
+# product. §9 characterises this vendor as "clean documented API, sane errors,
+# honest status codes" -- nothing about uptime. Transient failure belongs to
+# the flaky vendor and, mildly, to the legacy one.
+#
+# It is also what the harness demanded. With every endpoint on every appliance
+# declaring `transient`, a naive script hit at least one failure on ~14% of
+# tickets before a single login had collided, which put the degeneracy band of
+# §8 out of reach from day one and made Act I unpleasant for a reason that had
+# nothing to do with volume. --naive is what found that.
+#
+# Veridian writes can still commit and then time out (0.5%, in the endpoint
+# specs). That one is not unreliability -- it is the idempotency teacher, and
+# it must exist from the first hour of Act II.
 doc: "Enterprise identity and infrastructure. Documented, predictable, and priced accordingly."

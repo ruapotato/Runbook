@@ -6,6 +6,7 @@
  * different objects — is not, and changing one changes the game.
  */
 #include "world.h"
+#include "ticket.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -26,23 +27,81 @@ const char *prov_name(Prov p)
 }
 
 /* ----------------------------------------------------------------- names */
-/* Invented, and short on purpose. A small family-name table makes login
- * collisions happen on their own within a few in-game weeks, which is
- * exception class 1 (handoff §8) arriving as a consequence of growth rather
- * than as a scripted event. Widen these tables and you quietly delete a
- * mechanic. */
+/* Invented, and SIZED BY THE HARNESS, not by taste.
+ *
+ * Login collisions are exception class 1 (handoff §8), and the whole point is
+ * that they arrive as a consequence of growth rather than as a scripted
+ * event: the chance that a new hire's convention login is already taken is
+ * roughly headcount over the number of distinct name pairs.
+ *
+ * So the table size IS the collision curve. 68 x 64 is about 4,350 pairs,
+ * which puts a naive script's collision rate near 3%% at the 150-user Act I
+ * wall, 18%% at the 800-user end of Act II, and past certainty in Act III --
+ * the §8 ramp, produced by the growth model rather than dialled in.
+ *
+ * The first version of these tables had 384 pairs. The naive agent failed 99%%
+ * of tickets on day one, which is not a hard game, it is a broken one, and
+ * --naive is what said so. Do not shrink them without re-running it. */
 static const char *const GIVEN[] = {
-    "Alma", "Bexley", "Corin", "Dara", "Emlin", "Fen", "Gale", "Hollis",
-    "Isolde", "Jarek", "Kestral", "Lune", "Marek", "Nell", "Orin", "Perr",
-    "Quill", "Rasha", "Soren", "Tavi", "Ulla", "Vero", "Wynn", "Yara"
+    "Alma", "Bexley", "Corin", "Dara", "Emlin", "Fen",
+    "Gale", "Hollis", "Isolde", "Jarek", "Kestral", "Lune",
+    "Marek", "Nell", "Orin", "Perr", "Quill", "Rasha",
+    "Soren", "Tavi", "Ulla", "Vero", "Wynn", "Yara",
+    "Ansel", "Brill", "Caedy", "Delph", "Edran", "Fira",
+    "Grell", "Hesper", "Ivo", "Juno", "Kade", "Liora",
+    "Mabry", "Noor", "Ovid", "Pell", "Quen", "Rowan",
+    "Sable", "Thea", "Umber", "Vance", "Wray", "Xanthe",
+    "Arden", "Belen", "Cass", "Doran", "Eira", "Falk",
+    "Gwyn", "Hale", "Iris", "Joss", "Kiran", "Loel",
+    "Mira", "Nyle", "Oren", "Prue", "Rhys", "Sten",
+    "Tam", "Vail"
 };
-static const char *const FAMILY[] = {
-    "Ashcroft", "Barrow", "Calder", "Dunmore", "Ellery", "Fairbank",
-    "Garrow", "Hale", "Ives", "Joss", "Keel", "Lowry",
-    "Mercer", "Nash", "Orley", "Pike"
+/* FAMILY NAMES ARE COMPOSED, NOT LISTED, AND THE REASON IS ARITHMETIC.
+ *
+ * The collision space is not given-names times family-names. The convention
+ * keeps only the FIRST INITIAL of the given name, so the space is initials
+ * times surnames -- about 25 times however many surnames there are. Two
+ * hand-written tables of 68 and 96 names look like 6,528 combinations and
+ * behave like 2,400, which put a naive script's collision rate at 6% before
+ * anything exceptional had happened at all, and --naive-gate failed the Act I
+ * band on that alone. It took an afternoon to see, because 6,528 is a
+ * perfectly convincing number to have already checked.
+ *
+ * So the surnames are 40 stems by 12 endings: 480 plausible English surnames,
+ * about 12,000 logins.
+ *
+ * AND THE SPACE IS DELIBERATELY GENEROUS, which is the opposite of the first
+ * instinct. Collisions and the ticket exceptions both grow linearly with
+ * headcount, but the §8 band needs the naive failure rate to grow SEVENFOLD
+ * between the two sample points -- and collisions can only grow by the ratio
+ * of the headcounts, about five. So collisions cannot carry the ramp. They
+ * are the texture: about 1% of intake at the Act I wall, 7% by the end of
+ * Act II, always present, never the whole story. The exceptions carry the
+ * curve, because their rate is free to ramp on its own.
+ *
+ * Change either table and re-run --naive-gate; it is the only thing that
+ * knows whether the game still works. */
+static const char *const FAM_STEM[] = {
+    "Ash", "Barr", "Cald", "Dun", "Ell", "Fair", "Gar", "Hal",
+    "Ing", "Jarr", "Kel", "Lang", "Mar", "Neth", "Oak", "Pell",
+    "Quen", "Rush", "Sal", "Tarl", "Umb", "Van", "Wick", "Yarr",
+    "Ald", "Bram", "Cran", "Dray", "Eld", "Fen", "Glen", "Harr",
+    "Kend", "Lind", "Mow", "Norr", "Orm", "Pres", "Sedge", "West"
 };
+static const char *const FAM_END[] = {
+    "ford", "well", "ley", "ton", "wick", "croft",
+    "stead", "more", "bury", "field", "dale", "grove"
+};
+#define NFAM_STEM (sizeof FAM_STEM / sizeof FAM_STEM[0])
+#define NFAM_END  (sizeof FAM_END  / sizeof FAM_END[0])
+#define NFAMILY   (NFAM_STEM * NFAM_END)
+
+static void family_name(size_t i, char *out, size_t cap)
+{
+    snprintf(out, cap, "%s%s", FAM_STEM[i / NFAM_END], FAM_END[i % NFAM_END]);
+}
+
 #define NGIVEN  (sizeof GIVEN  / sizeof GIVEN[0])
-#define NFAMILY (sizeof FAMILY / sizeof FAMILY[0])
 
 /* ------------------------------------------------------- THE ORG POLICY
  *
@@ -177,8 +236,9 @@ Inst *world_install(World *w, const char *model_id, Prov prov)
 /* ------------------------------------------------------------------ boot */
 /* THE COMPANY ON THE PLAYER'S FIRST MORNING.
  *
- * Forty people, a directory with an account for each of them, a group per
- * department, and the memberships joining the two. All PROV_SEED: the player
+ * Forty people, fully provisioned across all three appliances: a directory
+ * account and a department group, a mailbox, a home folder and a share grant.
+ * All PROV_SEED: the player
  * did not do this work, so the migration that silently misses hand-made
  * records must not blame them for it, and the audit that finds it must not
  * credit them either.
@@ -188,23 +248,33 @@ Inst *world_install(World *w, const char *model_id, Prov prov)
  * appliance that does not go through appl_call(), it runs once, and it must
  * stay that way — the moment a second one appears, "everything the player can
  * do is reachable over the API" stops being true. */
-static void seed_directory(World *w)
+static void seed_org(World *w)
 {
-    Inst *dir = world_install(w, "veridian_dx", PROV_SEED);
-    if (!dir) return;
+    Inst *dir  = world_install(w, "veridian_dx",  PROV_SEED);
+    Inst *mail = world_install(w, "veridian_post", PROV_SEED);
+    Inst *fs   = world_install(w, "halcyon_fs9",  PROV_SEED);
+    if (!dir || !mail || !fs) return;
 
-    for (int d = 0; d < RB_DEPT__N; d++) {
-        char gname[RB_NAME_MAX];
-        snprintf(gname, sizeof gname, "dept-%s", rb_dept_name[d]);
-        Rec *g = appl_seed(dir, "groups", PROV_SEED, w->day);
-        rec_set(g, "name", gname);
-        rec_set(g, "dept", rb_dept_name[d]);
-    }
     Coll *gc = inst_coll(dir, "groups");
-    for (size_t i = 0; i < gc->nr; i++) coll_index_rec(gc, &gc->r[i]);
-
     Coll *ac = inst_coll(dir, "accounts");
     Coll *mc = inst_coll(dir, "memberships");
+    Coll *bc = inst_coll(mail, "mailboxes");
+    Coll *hc = inst_coll(fs, "homes");
+    Coll *sc = inst_coll(fs, "shares");
+    Coll *tc = inst_coll(fs, "grants");
+
+    for (int d = 0; d < RB_DEPT__N; d++) {
+        Rec *g = appl_seed(dir, "groups", PROV_SEED, w->day);
+        rec_setf(g, "name", "dept-%s", rb_dept_name[d]);
+        rec_set(g, "dept", rb_dept_name[d]);
+        coll_index_rec(gc, g);
+
+        Rec *sh = appl_seed(fs, "shares", PROV_SEED, w->day);
+        rec_setf(sh, "name", "share-%s", rb_dept_name[d]);
+        rec_setf(sh, "path", "/srv/%s", rb_dept_name[d]);
+        rec_set(sh, "dept", rb_dept_name[d]);
+        coll_index_rec(sc, sh);
+    }
 
     for (size_t i = 0; i < w->nusers; i++) {
         User *u = &w->users[i];
@@ -220,30 +290,40 @@ static void seed_directory(World *w)
         for (int suffix = 2; suffix < 10000; suffix++) {
             const char *kv[1] = { cand };
             if (!coll_find(ac, kv, 1)) break;
-            /* The base is at most RB_NAME_MAX and the suffix at most four
-             * digits, which fits RB_VAL_MAX with room; the bound on the loop
-             * is what makes that sentence true rather than hopeful. */
             snprintf(cand, sizeof cand, "%.*s%d", (int)(sizeof cand - 6), login, suffix);
         }
 
         Rec *a = appl_seed(dir, "accounts", PROV_SEED, w->day);
         rec_set(a, "login", cand);
         rec_set(a, "user_ref", u->id);
-        char disp[RB_NAME_MAX * 2];
-        snprintf(disp, sizeof disp, "%s_%s", u->given, u->family);
-        rec_set(a, "display_name", disp);
+        rec_setf(a, "display_name", "%s_%s", u->given, u->family);
         rec_set(a, "dept", rb_dept_name[u->dept]);
         rec_set(a, "status", "active");
-        /* appl_seed appends without indexing, so the de-collision loop above
-         * would not see the account it just made. Index as we go. */
         coll_index_rec(ac, a);
 
-        char gname[RB_NAME_MAX];
-        snprintf(gname, sizeof gname, "dept-%s", rb_dept_name[u->dept]);
-        Rec *mrec = appl_seed(dir, "memberships", PROV_SEED, w->day);
-        rec_set(mrec, "login", cand);
-        rec_set(mrec, "group", gname);
-        coll_index_rec(mc, mrec);
+        Rec *m = appl_seed(dir, "memberships", PROV_SEED, w->day);
+        rec_set(m, "login", cand);
+        rec_setf(m, "group", "dept-%s", rb_dept_name[u->dept]);
+        coll_index_rec(mc, m);
+
+        Rec *b = appl_seed(mail, "mailboxes", PROV_SEED, w->day);
+        rec_set(b, "login", cand);
+        rec_setf(b, "address", "%s@harbrook.example", cand);
+        rec_set(b, "quota_mb", "2048");
+        rec_set(b, "status", "active");
+        coll_index_rec(bc, b);
+
+        Rec *h = appl_seed(fs, "homes", PROV_SEED, w->day);
+        rec_set(h, "login", cand);
+        rec_setf(h, "path", "/home/%s", cand);
+        rec_set(h, "quota_mb", "8192");
+        coll_index_rec(hc, h);
+
+        Rec *t = appl_seed(fs, "grants", PROV_SEED, w->day);
+        rec_set(t, "login", cand);
+        rec_setf(t, "share", "share-%s", rb_dept_name[u->dept]);
+        rec_set(t, "access", "rw");
+        coll_index_rec(tc, t);
     }
 }
 
@@ -264,7 +344,8 @@ World *world_new(uint64_t seed, Specs *specs)
      * does not get blamed for them, and does not get credit for them. */
     for (int i = 0; i < RB_START_USERS; i++) {
         const char *g = GIVEN[rng_range(&w->rng, 0, NGIVEN - 1)];
-        const char *f = FAMILY[rng_range(&w->rng, 0, NFAMILY - 1)];
+        char f[RB_NAME_MAX];
+        family_name((size_t)rng_range(&w->rng, 0, NFAMILY - 1), f, sizeof f);
         uint8_t d = (uint8_t)rng_range(&w->rng, 0, RB_DEPT__N - 1);
         User *u = world_user_add(w, PROV_SEED, g, f, d);
         /* Hired at some point in the two years before the player arrived.
@@ -273,7 +354,7 @@ World *world_new(uint64_t seed, Specs *specs)
         if (u) u->hired_day = -rng_range(&w->rng, 1, 720);
     }
 
-    if (specs) seed_directory(w);
+    if (specs) seed_org(w);
     return w;
 }
 
@@ -281,6 +362,7 @@ void world_free(World *w)
 {
     if (!w) return;
     rb_free(w->users);
+    rb_free(w->tick);
     for (size_t i = 0; i < w->ninst; i++) inst_free(w->inst[i]);
     rb_free(w->inst);
     rb_free(w);
@@ -321,6 +403,10 @@ int world_day_advance(World *w)
     w->day++;
     w->ms = 0;
 
+    /* ---- yesterday's work counts. Settling before anything else means
+     * nobody is chased for a ticket that was finished last thing. */
+    world_ticket_sweep(w);
+
     /* ---- attrition. ~1%/day, carried in thousandths so a 40-person company
      * loses someone about every fortnight rather than never. */
     w->leave_milli += (int64_t)w->active * RB_ATTRITION_MILLI;
@@ -350,22 +436,29 @@ int world_day_advance(World *w)
     if (w->day % RB_WAVE_DAYS == 0)
         hires += rng_range(&w->rng, RB_WAVE_MIN, RB_WAVE_MAX);
 
-    /* ---- M0 STAND-IN, AND THE ONE SEAM M2 CUTS.
+    /* ---- THE INTAKE.
      *
-     * A hire should arrive as an onboarding ticket, and become a provisioned
-     * person only when that ticket's acceptance checks pass (§4, §7). There is
-     * no ticket system yet, so the day hires them and leaves them entirely
-     * unprovisioned — which is already the right shape, because a hired person
-     * with no account is exactly what an onboarding ticket is about.
-     *
-     * At M2 this loop gains one line: raise a ticket per hire. Nothing else in
-     * this function changes. */
+     * A hire arrives as a person with nothing provisioned for them, and an
+     * onboarding ticket that says so. They become a provisioned person only
+     * when that ticket's acceptance checks pass against real state (§4, §7,
+     * decision 9) — the player never marks anything done. */
+    const TicketType *onboard = w->specs ? spec_ticket(w->specs, "user.onboard") : NULL;
     for (int i = 0; i < hires; i++) {
         const char *g = GIVEN[rng_range(&w->rng, 0, NGIVEN - 1)];
-        const char *f = FAMILY[rng_range(&w->rng, 0, NFAMILY - 1)];
+        char f[RB_NAME_MAX];
+        family_name((size_t)rng_range(&w->rng, 0, NFAMILY - 1), f, sizeof f);
         uint8_t d = (uint8_t)rng_range(&w->rng, 0, RB_DEPT__N - 1);
-        world_user_add(w, PROV_SEED, g, f, d);
+        User *u = world_user_add(w, PROV_SEED, g, f, d);
+        /* THE SEAM M0 CUT, NOW USED. The person is hired; nothing is
+         * provisioned for them; a ticket says so. Everything downstream --
+         * the queue, the SLA, the follow-ups, the win condition -- hangs off
+         * this one line. */
+        if (u && onboard) world_ticket_exception(w, world_ticket_new(w, onboard, u->id));
     }
+
+    /* ---- and the chasing, last, so today's arrivals are not chased on the
+     * day they arrive. */
+    world_ticket_day(w);
     return hires;
 }
 

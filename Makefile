@@ -19,6 +19,9 @@
 
 CC      ?= cc
 CSTD     = -std=c11
+# POSIX for clock_gettime, which the harness uses to report wall time. The
+# world model never sees it: nothing in the simulation may depend on a clock.
+CSTD    += -D_POSIX_C_SOURCE=200809L
 WARN     = -Wall -Wextra -Wno-unused-parameter
 FPFLAGS  = -ffp-contract=off -fno-fast-math
 OPT     ?= -O2
@@ -32,8 +35,8 @@ LDFLAGS +=
 # line exists; everything else is linked, unchanged, into the GDExtension when
 # the client arrives at M3. If a source file here ever needs to know whether it
 # is running under Godot, the model/view rule has already been broken.
-CORE_SRC = core/util.c core/yaml.c core/spec.c core/appl.c core/world.c \
-           core/proto.c core/serve.c core/health.c core/mancheck.c
+CORE_SRC = core/util.c core/yaml.c core/spec.c core/appl.c core/ticket.c core/world.c \
+           core/proto.c core/serve.c core/health.c core/mancheck.c core/play.c
 CORE_OBJ = $(CORE_SRC:core/%.c=build/%.o)
 MAIN_OBJ = build/main.o
 
@@ -43,7 +46,7 @@ BIN = build/runbook
 # become the default and silently build the wrong thing.
 .DEFAULT_GOAL := all
 
-.PHONY: all check health mancheck determinism clean windows specs
+.PHONY: all check health mancheck play naive determinism clean windows specs
 
 all: $(BIN)
 
@@ -69,13 +72,23 @@ build/spec.o: core/specbin.h
 # ---------------------------------------------------------------- the gates
 # M0's whole deliverable. Nothing else starts until these are green
 # (handoff §15).
-check: health mancheck determinism
+check: health mancheck play naive determinism
 
 health: $(BIN)
 	@./$(BIN) --health
 
 mancheck: $(BIN)
 	@./$(BIN) --mancheck
+
+# THE BALANCE HARNESS (§13). --play says a competent script can keep up;
+# --naive-gate says an incompetent one cannot. Neither number is a vibe check
+# and neither is tuned by argument: every constant in the growth model, the
+# exception ramp and the failure rates was set by running these.
+play: $(BIN)
+	@./$(BIN) --play --days 60
+
+naive: $(BIN)
+	@./$(BIN) --naive-gate
 
 determinism: $(BIN)
 	@./tools/check_determinism.sh

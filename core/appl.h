@@ -15,7 +15,12 @@
 
 #include "spec.h"
 
-#define RB_VAL_MAX 64
+/* A field value. Wide enough that everything the world composes from a login
+ * -- an address, a home path, a share name -- fits with room to spare: a
+ * login is at most RB_NAME_MAX (48) and the longest suffix anything appends
+ * is "@harbrook.example" at 17. Nothing here truncates in practice, and
+ * rec_setf() is where to look if that ever stops being true. */
+#define RB_VAL_MAX 96
 
 typedef struct { char k[RB_NAME_MAX]; char v[RB_VAL_MAX]; } Field;
 
@@ -92,6 +97,7 @@ Rec  *coll_insert(Coll *c, Prov prov, int32_t day);
 void  coll_index_rec(Coll *c, Rec *r);
 const char *rec_get(const Rec *r, const char *k);
 void  rec_set(Rec *r, const char *k, const char *v);
+void  rec_setf(Rec *r, const char *k, const char *fmt, ...);
 
 /* The one way in. args are the caller's fields; prov is who to blame. */
 void appl_call(World *w, Inst *in, const char *endpoint,

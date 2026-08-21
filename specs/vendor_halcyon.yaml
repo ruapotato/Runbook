@@ -1,0 +1,23 @@
+# Halcyon Data Works — the legacy one (handoff §9).
+#
+# The API exists. It speaks XML, and it lies: every answer is a success, and
+# whether it actually worked is a thing you find out by reading the body or by
+# asking again afterwards. Mid-priced, which is why it is still here.
+#
+# This is the vendor that teaches `verify everything`, and it teaches it the
+# only way anybody ever learns it: by letting a script report forty successful
+# provisions and then showing the player that six of them did not happen.
+vendor: halcyon
+name: Halcyon Data Works
+archetype: legacy
+theme: halcyon_amber
+cost: 120
+rate_limit: 60
+transient_bp: 40           # 0.4% — and it will not tell you which calls failed
+# LOW, AND SET BY THE GATE. Every point of this rate lands on a naive script
+# twice, once for the home folder and once for the share grant, and it does so
+# from the very first ticket -- before a single login has collided. It is
+# therefore a flat tax on Act I, which §5 says must be pleasant, and it eats
+# the headroom the §8 band needs at the Act I wall. Turn it up and --naive-gate
+# fails on the first band. The flaky vendor is where unreliability lives.
+doc: "Storage and file services. In continuous service since before the API was designed, which shows."

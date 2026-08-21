@@ -9,6 +9,7 @@
  * success. PENDING lines are how this one refuses to do that.
  */
 #include "proto.h"
+#include "ticket.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdarg.h>
@@ -286,14 +287,90 @@ int health_run(uint64_t seed, const char *specdir)
     check(world_hash(w) != world_hash(w2), "a different seed builds a different org");
     world_free(w2);
 
+    /* ---- the oracle (handoff decision 9) */
+    {
+        Session s;
+        proto_open(&s, w);
+        Buf r;
+        buf_init(&r);
+
+        int32_t before_users = (int32_t)w->nusers;
+        world_day_advance(w);
+        check(w->ntick > 0, "a day's hires raise onboarding tickets");
+        check((int32_t)w->nusers > before_users, "and the people they are about exist");
+
+        Ticket *t = w->ntick ? &w->tick[0] : NULL;
+        Verdict v;
+        if (t) ticket_evaluate(w, t, &v);
+        check(t && !v.all, "a fresh onboarding ticket does not pass its own checks");
+        check(t && t->closed_day < 0, "and it is open");
+
+        /* THERE MUST BE NO WAY TO CLOSE A TICKET BY SAYING SO.
+         *
+         * This is decision 9, and it is the one every other part of the game
+         * rests on: the vacation test, the run report, the balance harness.
+         * A "mark as done" verb would not look like a mistake in review -- it
+         * would look like a convenience -- so it is asserted here, by name,
+         * and the assertion is the argument. */
+        const char *forbidden[] = { "ticket.resolve", "ticket.close", "ticket.done", "ticket.complete" };
+        bool none = true;
+        for (size_t i = 0; i < sizeof forbidden / sizeof forbidden[0]; i++) {
+            buf_clear(&r);
+            Session s2;
+            proto_open(&s2, w);
+            proto_exec(&s2, forbidden[i], &r);
+            if (!r.p || !strstr(r.p, "unknown verb")) { note("'%s' exists; it must not", forbidden[i]); none = false; }
+        }
+        check(none, "no verb closes a ticket by assertion; only state does");
+
+        /* And doing the work does close it, through the API, like a player. */
+        if (t) {
+            User *u = world_user_find(w, t->subject);
+            char login[RB_NAME_MAX];
+            if (u) world_login_for(w, u, login, sizeof login);
+            const char *dept = u ? rb_dept_name[u->dept] : "engineering";
+            char also[RB_NAME_MAX] = "", share_ov[RB_VAL_MAX] = "";
+            for (int f = 0; f < t->nfields; f++) {
+                if (!strcmp(t->fields[f].k, "also_dept"))      snprintf(also, sizeof also, "%s", t->fields[f].v);
+                if (!strcmp(t->fields[f].k, "share_override")) snprintf(share_ov, sizeof share_ov, "%s", t->fields[f].v);
+            }
+            char cmd[RB_LINE_MAX];
+            /* Retry generously: this is a health check, not a skill check. */
+            for (int attempt = 0; attempt < 8; attempt++) {
+                snprintf(cmd, sizeof cmd, "api.call directory_01 create_account login=%s user_ref=%s display_name=x dept=%s status=active", login, t->subject, dept);
+                buf_clear(&r); proto_exec(&s, cmd, &r);
+                snprintf(cmd, sizeof cmd, "api.call directory_01 update_account login=%s status=active", login);
+                buf_clear(&r); proto_exec(&s, cmd, &r);
+                snprintf(cmd, sizeof cmd, "api.call directory_01 add_member login=%s group=dept-%s", login, dept);
+                buf_clear(&r); proto_exec(&s, cmd, &r);
+                if (also[0]) { snprintf(cmd, sizeof cmd, "api.call directory_01 add_member login=%s group=dept-%s", login, also);
+                               buf_clear(&r); proto_exec(&s, cmd, &r); }
+                snprintf(cmd, sizeof cmd, "api.call mail_01 create_mailbox login=%s address=%s@harbrook.example quota_mb=2048 status=active", login, login);
+                buf_clear(&r); proto_exec(&s, cmd, &r);
+                snprintf(cmd, sizeof cmd, "api.call fileserver_01 create_home login=%s path=/home/%s quota_mb=8192", login, login);
+                buf_clear(&r); proto_exec(&s, cmd, &r);
+                snprintf(cmd, sizeof cmd, "api.call fileserver_01 grant_share login=%s share=%s access=rw",
+                         login, share_ov[0] ? share_ov : "");
+                if (!share_ov[0]) snprintf(cmd, sizeof cmd, "api.call fileserver_01 grant_share login=%s share=share-%s access=rw", login, dept);
+                buf_clear(&r); proto_exec(&s, cmd, &r);
+                if (ticket_settle(w, t)) break;
+            }
+            check(t->closed_day >= 0, "doing the work, through the API, closes the ticket");
+            check(t->closed_prov == PROV_SCRIPT || t->closed_prov == PROV_SEED,
+                  "and the ticket records who did it");
+        }
+        buf_free(&r);
+    }
+
     check_endpoints(w);
     check_help_verbs(w);
 
     world_free(w);
     specs_free(specs);
 
-    pending("--naive, the exception-rate band", "no naive bot until M5");
-    pending("--play, an agent through all three acts", "no tickets until M2");
+    /* --play and --naive-gate are their own gates now; health does not
+     * duplicate them, it points at them. */
+    pending("the win condition", "no vacation gate until M7");
 
     printf("health: %d checks, %d failed\n", checks, fails);
     return fails ? 1 : 0;

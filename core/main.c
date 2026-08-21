@@ -13,6 +13,8 @@
 
 int health_run(uint64_t seed, const char *specdir);   /* health.c */
 int mancheck_run(uint64_t seed, const char *specdir); /* mancheck.c */
+int play_run(uint64_t seed, const char *specdir, int days, bool naive, int users_cap, const char *out); /* play.c */
+int naive_gate_run(uint64_t seed, const char *specdir, int days);                  /* play.c */
 
 #define DEFAULT_SEED 424242ULL
 #define DEFAULT_PORT 7711
@@ -23,6 +25,9 @@ static void usage(void)
          "\n"
          "  runbook --health [--seed N]        the health gate\n"
          "  runbook --mancheck                 every documented example, executed\n"
+         "  runbook --play [--days N]          a reference agent plays, and reports\n"
+         "  runbook --play --naive             let a bot that does not branch loose, and watch it drown\n"
+         "  runbook --naive-gate               the §8 degeneracy band, as a gate\n"
          "  runbook --seed N --days D --out F  run D days, write the world to F\n"
          "  runbook --serve [--port P]         listen on 127.0.0.1 (default 7711)\n"
          "  runbook --exec 'verb args'         run one command and exit\n"
@@ -67,12 +72,18 @@ int main(int argc, char **argv)
     uint64_t seed = DEFAULT_SEED;
     int  days = 0, port = DEFAULT_PORT;
     bool health = false, serve = false, verbose = false, mancheck = false;
+    bool play = false, naive = false, gate = false;
+    int users_cap = 0;
     const char *out_path = NULL, *exec_line = NULL, *specdir = NULL;
 
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
         if      (!strcmp(a, "--health"))  health = true;
         else if (!strcmp(a, "--mancheck")) mancheck = true;
+        else if (!strcmp(a, "--play"))    play = true;
+        else if (!strcmp(a, "--naive"))   { play = true; naive = true; }
+        else if (!strcmp(a, "--naive-gate")) gate = true;
+        else if (!strcmp(a, "--until-users") && i + 1 < argc) users_cap = atoi(argv[++i]);
         else if (!strcmp(a, "--specs") && i + 1 < argc) specdir = argv[++i];
         else if (!strcmp(a, "--serve"))   serve = true;
         else if (!strcmp(a, "--verbose")) verbose = true;
@@ -94,6 +105,8 @@ int main(int argc, char **argv)
 
     if (health)   return health_run(seed, specdir);
     if (mancheck) return mancheck_run(seed, specdir);
+    if (gate)     return naive_gate_run(seed, specdir, days ? days : 90);
+    if (play)     return play_run(seed, specdir, days ? days : 60, naive, users_cap, out_path);
 
     /* Specs load once and the world borrows them. A spec that fails to load
      * stops the program here rather than producing a world with two thirds of

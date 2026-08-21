@@ -1,0 +1,89 @@
+# The primary task (handoff §6): user lifecycle.
+#
+# Seven checks, which is what a real onboarding costs: an account named by the
+# convention, a department group, a mailbox, a home folder, a share grant. Do
+# it by hand and it is six form submissions across three appliances and about
+# twelve in-game minutes, which is what puts the Act I wall at roughly forty
+# tickets a day.
+#
+# NOTHING HERE IS HIDDEN. The checks are visible from the moment the ticket
+# opens; the description is prose and is redundant with every field. There is
+# no fault to discover and no diagnosis to perform -- that collapses into a
+# checklist within hours and it has killed every prior attempt in this
+# lineage. The pressure is volume, and volume only.
+ticket: user.onboard
+subject: user
+sla_minutes: 480
+weight: 100
+description: "New hire {given} {family} joins {dept}. Set up their account, mail and files."
+doc: "Provision a new starter across the directory, mail and file services."
+
+acceptance:
+  - id: account_exists
+    check: exists
+    appliance: directory
+    collection: accounts
+    where: { user_ref: "{subject}" }
+    bind: account
+    doc: "They have an account in the directory of record."
+
+  - id: login_follows_convention
+    check: convention
+    field: login
+    of: account
+    doc: "The login is first initial plus family name, with a number only if it had to collide."
+
+  - id: account_active
+    check: equals
+    of: account
+    field: status
+    value: active
+    doc: "The account is active, not left in whatever state it was created in."
+
+  - id: in_department_group
+    check: exists
+    appliance: directory
+    collection: memberships
+    where: { login: "{account.login}", group: "dept-{dept}" }
+    doc: "They are in their department's group."
+
+  # The exceptional cases. Each one is turned on by a field the ticket
+  # carries, in the open, from the moment it opens -- there is nothing to
+  # diagnose here, only something to handle.
+  - id: in_second_group
+    check: exists
+    when: also_dept
+    appliance: directory
+    collection: memberships
+    where: { login: "{account.login}", group: "dept-{also_dept}" }
+    doc: "They are also in the second department they were hired into."
+
+  - id: mailbox_exists
+    check: exists
+    appliance: mail
+    collection: mailboxes
+    where: { login: "{account.login}" }
+    doc: "They have a mailbox."
+
+  - id: home_folder_exists
+    check: exists
+    appliance: fileserver
+    collection: homes
+    where: { login: "{account.login}" }
+    doc: "They have a home folder."
+
+  - id: department_share_granted
+    check: exists
+    unless: share_override
+    appliance: fileserver
+    collection: grants
+    where: { login: "{account.login}", share: "share-{dept}" }
+    doc: "They can reach their department's share."
+
+  - id: named_share_granted
+    check: exists
+    when: share_override
+    appliance: fileserver
+    collection: grants
+    where: { login: "{account.login}", share: "{share_override}" }
+    doc: "They can reach the share this ticket names, which is not the department default."

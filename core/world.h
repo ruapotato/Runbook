@@ -17,6 +17,8 @@
 #include "rb.h"
 #include "appl.h"
 
+struct Ticket;
+
 /* ---------------------------------------------------------- departments */
 /* Six, because department is what group membership, share paths and the
  * naming convention all branch on (handoff §6, §8) and six gives the
@@ -77,6 +79,10 @@ typedef struct {
 #define RB_WAVE_MIN        15
 #define RB_WAVE_MAX        40
 #define RB_START_USERS     40   /* Act I opens here (§5) */
+/* Chases per day, per ticket that is past its SLA, in thousandths. Handoff
+ * §5: "unresolved tickets roll over and spawn follow-ups at 0.4x per day
+ * unresolved. This is the compounding pressure." */
+#define RB_FOLLOWUP_MILLI 400
 
 /* ---------------------------------------------------------------- world */
 struct World {
@@ -100,6 +106,15 @@ struct World {
     /* Fractional headcount, carried in thousandths so a 6%/day growth on 40
      * users does not round to zero every day and then jump. */
     int64_t  hire_milli, leave_milli;
+
+    /* THE QUEUE. Tickets are never deleted, only closed: the run report, the
+     * SLA arithmetic and the M6 audit all read back over the whole history,
+     * and a queue that forgets cannot be graded. */
+    struct Ticket *tick;
+    size_t   ntick, tcap;
+    int32_t  next_tid;
+    int32_t  open_count;
+    int32_t  closed_total, breached_total, followups_total;
 
     char     err[RB_ERR_MAX];
 };

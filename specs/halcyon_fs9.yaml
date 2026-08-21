@@ -1,0 +1,119 @@
+# Halcyon FS/9 — file services.
+#
+# Home folders and department shares. Everything here answers 200, including
+# the failures; the error is in the body, in XML, and a script that trusts the
+# status code will report a clean run over six people who have no home folder.
+#
+# That is not a bug in the appliance. It is what the appliance is for.
+id: halcyon_fs9
+model: Halcyon FS/9
+vendor: halcyon
+kind: fileserver
+interfaces: [web, api]
+capacity: 600
+credential_days: 90        # the service credential the scan-to-folder ticket asks about
+doc: "File services: home folders and department shares. Answers XML, and answers 200 whatever happens."
+
+state:
+  homes:
+    key: [login]
+    reuse_key: no          # a home folder's path is not handed to the next person
+    fields: [login, path, quota_mb]
+  grants:
+    key: [login, share]
+    fields: [login, share, access]
+  shares:
+    key: [name]
+    fields: [name, path, dept]
+
+endpoints:
+  - id: list_homes
+    op: list
+    collection: homes
+    latency_ms: 260
+    doc: "Every home folder."
+    examples:
+      - "api.call {inst} list_homes"
+
+  - id: get_home
+    op: get
+    collection: homes
+    fields: [login]
+    required: [login]
+    latency_ms: 200
+    doc: "One home folder by login."
+    examples:
+      - "api.call {inst} get_home login={login}"
+
+  - id: create_home
+    op: create
+    collection: homes
+    fields: [login, path, quota_mb]
+    required: [login, path]
+    idempotent_on: [login]
+    latency_ms: 500
+    failure_modes: [transient, timeout_after_commit, stall]
+    doc: "Create a home folder. Answers 200 on failure like everything else here; read the body."
+    examples:
+      - "api.call {inst} create_home login={newlogin} path=/home/{newlogin} quota_mb=8192"
+
+  - id: delete_home
+    op: delete
+    collection: homes
+    fields: [login]
+    required: [login]
+    latency_ms: 400
+    doc: "Remove a home folder. The path stays spent."
+    examples:
+      - "api.call {inst} delete_home login={newlogin}"
+
+  - id: list_shares
+    op: list
+    collection: shares
+    filter: dept
+    latency_ms: 200
+    doc: "Department shares."
+    examples:
+      - "api.call {inst} list_shares"
+
+  - id: list_grants
+    op: list
+    collection: grants
+    filter: share
+    latency_ms: 240
+    doc: "Who has access to what."
+    examples:
+      - "api.call {inst} list_grants"
+
+  - id: grant_share
+    op: create
+    collection: grants
+    fields: [login, share, access]
+    required: [login, share]
+    idempotent_on: [login, share]
+    references: { share: shares }
+    latency_ms: 420
+    failure_modes: [transient, stall]
+    doc: "Grant an account access to a share. The share must exist; the account is not checked, which is a known defect of this appliance."
+    examples:
+      - "api.call {inst} grant_share login={login} share=share-engineering access=rw"
+
+  - id: revoke_share
+    op: delete
+    collection: grants
+    fields: [login, share]
+    required: [login, share]
+    latency_ms: 380
+    doc: "Take access away again."
+    examples:
+      - "api.call {inst} revoke_share login={login} share=share-engineering"
+
+forms:
+  - id: home_new
+    title: "New home folder"
+    calls: create_home
+    fields: [login, path, quota_mb]
+  - id: grant_new
+    title: "Grant share access"
+    calls: grant_share
+    fields: [login, share, access]
