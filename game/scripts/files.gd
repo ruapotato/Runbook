@@ -26,6 +26,10 @@ var scroll := 0
 var viewing := ""                # a file being shown, "" for the listing
 var content: PackedStringArray = []
 var note := ""
+# Set by the desktop: how to open a script for editing. A file browser that
+# knew how to build an editor window would be a file browser that knew about
+# windows.
+var on_edit: Callable = func(_p: String) -> void: pass
 
 func setup(a: RunbookApi) -> void:
 	api = a
@@ -66,6 +70,13 @@ func _open(name: String) -> void:
 			viewing = ""
 			note = ""
 			refresh()
+		elif name.ends_with(".py") or name.ends_with(".sh"):
+			# A SCRIPT OPENS IN THE EDITOR, not the viewer. Double-clicking a
+			# program and getting a read-only page of it is the behaviour of a
+			# file manager that does not believe you are going to change
+			# anything.
+			if on_edit.is_valid():
+				on_edit.call(path)
 		else:
 			# `cat`, on the machine. A file the machine cannot read shows the
 			# machine's own complaint, which is the useful thing to see.

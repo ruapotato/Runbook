@@ -123,6 +123,24 @@ int boxcheck_run(uint64_t seed, const char *specdir)
     ck(has(&out, "Harbrook"),
        "and a script can call the API and index the answer as a dict");
 
+    /* ---- DOES THE LANGUAGE ACTUALLY WORK, in full.
+     *
+     * /root/examples/selftest.py is seventy-odd assertions over arithmetic,
+     * comparison, strings, lists, dicts, control flow, functions, recursion
+     * and the natives. It runs here because "the interpreter is broken" is a
+     * thing a player would experience as "I cannot program", and that is the
+     * one conclusion this game must never cause. */
+    sh(b, "py /root/examples/selftest.py", &out);
+    ck(has(&out, "selftest: OK"), "the language passes its own suite");
+    if (!has(&out, "selftest: OK") && out.p) printf("machine:       %s\n", out.p);
+
+    /* And the shell, for the same reason and with the same weight: pipes,
+     * redirection, variables, substitution, for loops, and $? -- which was
+     * empty inside scripts until this file went looking. */
+    sh(b, "/root/examples/selftest.sh", &out);
+    ck(has(&out, "selftest.sh: done") && has(&out, "status 0"),
+       "and the shell has pipes, loops, redirection and a working $?");
+
     /* ---- THE EXAMPLES ON THE DISK, which are the on-ramp §15 asks for.
      * They are not decoration: a player who has to invent automation from a
      * blank prompt mostly does not, and these are a working script to read,

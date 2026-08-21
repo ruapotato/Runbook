@@ -72,6 +72,12 @@ Two layers, both on the machine, both real.
 **The shell** is bash-shaped: `for … do … done`, variables, `$(…)`, pipelines,
 redirection, `&&`/`||`, globbing, quoting — and scripts in files.
 
+`/root/examples/selftest.py` is 71 assertions over arithmetic, comparison,
+strings, lists, dicts, control flow, functions and recursion, and it runs in
+`make machine` — because "the interpreter is broken" is something a player
+experiences as *"I cannot program"*, and that is the one conclusion this game
+must never cause. `selftest.sh` does the same for the shell.
+
 **`/bin/py` is a Python subset** — indentation, `if`/`elif`/`else`, `while`,
 `for`/`in`, `def`/`return`, integers, strings, lists and dicts. It is
 NOMINAL's lexer, compiler and bytecode VM compiled for RISC-V, so a script is
@@ -108,8 +114,54 @@ machine:  0.07 ms per API call from a py script   (~15,000/second)
 The interpreter is *faster* than shell+`rb`, because it does not spawn a
 process per call. A 6,000-call Act III day costs under half a second.
 
-Still missing: the macro recorder (§16.2) — the on-ramp for players who will
-never open a terminal. The examples on the disk are half of that ramp.
+## The macro recorder
+
+Decision 15 calls this *"the single most important accessibility feature in
+the game"*, and the goal it serves is **making programmers out of regular
+people** — not attracting programmers to the game. Those are different
+products.
+
+There is a **record** button in the panel from the first morning. Press it, do
+a job the way you normally would — fill in the forms, click the buttons — and
+press it again. It does not record keystrokes and it does not emit a macro: it
+watched the API calls your clicking produced (which is all your clicking ever
+*was*), and it writes them out as a Python script that **opens in an editor
+with a Run button next to it.**
+
+Do one person and you get lines you can read. Do **two** and it notices:
+
+```python
+# You did the same 3 steps 2 times.
+#
+# The 4 things that changed each time are in the list below. Add a
+# row and the loop does another one; that is the whole idea.
+#
+# 2 others worked out from those, just under the loop -- you were
+# following a rule, and that is the rule written down.
+
+work = [
+    ["esedgeton", "u_00041", "Emlin Sedgeton", "sales"],
+    ["sharrcroft", "u_00042", "Sten Harrcroft", "support"],
+]
+
+for row in work:
+    login = row[0]
+    user_ref = row[1]
+    display_name = row[2]
+    dept = row[3]
+    group = "dept-" + dept
+    address = login + "@harbrook.example"
+
+    api("api.call directory_01 create_account login=" + login + ...)
+```
+
+Nobody is taught what a variable is. They are shown one holding their own
+work, with their own name in it — and `group = "dept-" + dept` is the rule
+they were already following, written down.
+
+The gate records a job through the UI, saves the script to the machine, runs
+it, and checks the account really exists with the right name. A recorder whose
+output does not execute is a demo.
 
 ## The desktop
 

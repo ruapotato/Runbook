@@ -35,7 +35,7 @@ LDFLAGS +=
 # line exists; everything else is linked, unchanged, into the GDExtension when
 # the client arrives at M3. If a source file here ever needs to know whether it
 # is running under Godot, the model/view rule has already been broken.
-CORE_SRC = core/util.c core/yaml.c core/spec.c core/appl.c core/ticket.c core/world.c \
+CORE_SRC = core/util.c core/yaml.c core/spec.c core/appl.c core/ticket.c core/recorder.c core/world.c \
            core/proto.c core/serve.c core/box.c core/health.c core/mancheck.c core/boxcheck.c core/play.c
 
 # THE MACHINE, LIFTED FROM NOMINAL AND BUILT UNCHANGED.

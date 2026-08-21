@@ -282,6 +282,138 @@ static VmStatus n_sub(VM *v, Value *a, int n, Value *out)
     return VM_OK;
 }
 
+/* append(list, value) -- BUILD a list, not just read one.
+ *
+ * The selftest found this missing by not being able to count itself, which is
+ * a small embarrassment standing in for a large one: a language where lists
+ * are read-only is a language you cannot collect anything in, and collecting
+ * things is most of what a provisioning script does. Every one of the natives
+ * from here down is in the same category -- not features, but the difference
+ * between a language and a demonstration. */
+static VmStatus n_append(VM *v, Value *a, int n, Value *out)
+{
+    (void)v; (void)n;
+    if (IS_LIST(a[0])) list_push(AS_LIST(a[0]), val_retain(a[1]));
+    *out = val_retain(a[0]);
+    return VM_OK;
+}
+
+/* keys(dict) -- because a dict you cannot iterate is a dict you can only ask
+ * questions you already know the answer to. */
+static VmStatus n_keys(VM *v, Value *a, int n, Value *out)
+{
+    (void)v; (void)n;
+    Value l = list_new();
+    if (IS_DICT(a[0])) {
+        Dict *d = AS_DICT(a[0]);
+        for (u32 i = 0; i < d->len; i++) list_push(AS_LIST(l), val_retain(d->k[i]));
+    }
+    *out = l;
+    return VM_OK;
+}
+
+/* has(dict, key) -- indexing a key that is not there is an ERROR, and it
+ * should be: a script quietly reading nil out of a typo'd field is exactly
+ * the kind of bug this game is about. So there has to be a way to ask. */
+static VmStatus n_has(VM *v, Value *a, int n, Value *out)
+{
+    (void)v; (void)n;
+    Value found;
+    *out = VAL_BOOL(IS_DICT(a[0]) && dict_get(AS_DICT(a[0]), a[1], &found));
+    return VM_OK;
+}
+
+/* join(list, sep) -- the other half of split. */
+static VmStatus n_join(VM *v, Value *a, int n, Value *out)
+{
+    (void)v;
+    const char *sep = (n > 1 && IS_STR(a[1])) ? AS_STR(a[1])->s : "";
+    Buf b;
+    buf_init(&b);
+    if (IS_LIST(a[0])) {
+        List *l = AS_LIST(a[0]);
+        for (u32 i = 0; i < l->len; i++) {
+            if (i) buf_puts(&b, sep);
+            val_tostr(&b, l->v[i]);
+        }
+    }
+    *out = str_new(b.p ? b.p : "", b.len);
+    buf_free(&b);
+    return VM_OK;
+}
+
+/* strip(s) -- every line read back from anything has whitespace on it. */
+static VmStatus n_strip(VM *v, Value *a, int n, Value *out)
+{
+    (void)v; (void)n;
+    if (!IS_STR(a[0])) { *out = val_retain(a[0]); return VM_OK; }
+    Str *s = AS_STR(a[0]);
+    u32 i = 0, j = s->len;
+    while (i < j && (s->s[i] == ' ' || s->s[i] == '\t' || s->s[i] == '\n' || s->s[i] == '\r')) i++;
+    while (j > i && (s->s[j-1] == ' ' || s->s[j-1] == '\t' || s->s[j-1] == '\n' || s->s[j-1] == '\r')) j--;
+    *out = str_new(s->s + i, j - i);
+    return VM_OK;
+}
+
+/* replace(s, from, to) */
+static VmStatus n_replace(VM *v, Value *a, int n, Value *out)
+{
+    (void)v; (void)n;
+    if (!IS_STR(a[0]) || !IS_STR(a[1])) { *out = val_retain(a[0]); return VM_OK; }
+    Str *s = AS_STR(a[0]);
+    Str *f = AS_STR(a[1]);
+    const char *t = (n > 2 && IS_STR(a[2])) ? AS_STR(a[2])->s : "";
+    Buf b;
+    buf_init(&b);
+    if (!f->len) { *out = val_retain(a[0]); buf_free(&b); return VM_OK; }
+    for (u32 i = 0; i < s->len; ) {
+        if (i + f->len <= s->len && nom_strncmp(s->s + i, f->s, f->len) == 0) {
+            buf_puts(&b, t);
+            i += f->len;
+        } else {
+            buf_putc(&b, s->s[i]);
+            i++;
+        }
+    }
+    *out = str_new(b.p ? b.p : "", b.len);
+    buf_free(&b);
+    return VM_OK;
+}
+
+/* read(path) / write(path, text) -- THE MACHINE IS A COMPUTER, and a script
+ * that cannot keep a note between runs is a script that has to be told
+ * everything twice. A list of people to onboard is a file. */
+static char io_buf[32768];
+
+static VmStatus n_read(VM *v, Value *a, int n, Value *out)
+{
+    (void)v; (void)n;
+    *out = VAL_NIL;
+    if (!IS_STR(a[0])) return VM_OK;
+    i64 got = g_slurp(AS_STR(a[0])->s, io_buf, sizeof io_buf);
+    if (got < 0) return VM_OK;          /* nil, so `if read(p):` reads well */
+    *out = str_new(io_buf, (size_t)got);
+    return VM_OK;
+}
+
+static VmStatus n_write(VM *v, Value *a, int n, Value *out)
+{
+    (void)v; (void)n;
+    *out = VAL_BOOL(false);
+    if (!IS_STR(a[0])) return VM_OK;
+    Buf b;
+    buf_init(&b);
+    val_tostr(&b, a[1]);
+    int fd = g_open(AS_STR(a[0])->s, O_WRONLY | O_CREAT | O_TRUNC);
+    if (fd >= 0) {
+        g_write(fd, b.p ? b.p : "", b.len);
+        g_close(fd);
+        *out = VAL_BOOL(true);
+    }
+    buf_free(&b);
+    return VM_OK;
+}
+
 /* exit(code) -- because a script that has decided it is finished should be
  * able to say so. */
 static VmStatus n_exit(VM *v, Value *a, int n, Value *out)
@@ -301,6 +433,14 @@ static const Native NATIVES[] = {
     { "find",  2, 2, n_find  },
     { "json",  1, 1, n_json  },
     { "lines", 1, 1, n_lines },
+    { "append", 2, 2, n_append },
+    { "keys",   1, 1, n_keys   },
+    { "has",    2, 2, n_has    },
+    { "join",   1, 2, n_join   },
+    { "strip",  1, 1, n_strip  },
+    { "replace",2, 3, n_replace},
+    { "read",   1, 1, n_read   },
+    { "write",  2, 2, n_write  },
     { "lower", 1, 1, n_lower },
     { "upper", 1, 1, n_upper },
     { "sub",   2, 3, n_sub   },
@@ -345,7 +485,10 @@ void _start(void)
                "  api(line)     one line of the company's API, as a string\n"
                "  json(text)    one answer, as a dict you can index\n"
                "  lines(text)   an answer, as a list of lines\n"
-               "  split, find, sub, lower, upper, len, str, int, print, exit\n"
+               "  lists         append, join, keys, has, len\n"
+               "  strings       split, find, sub, lower, upper, strip, replace, str, int\n"
+               "  files         read(path), write(path, text)\n"
+               "  print, exit\n"
                "\n"
                "  r = api(\"ticket.list open 5\")\n"
                "  for l in lines(r):\n"

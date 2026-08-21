@@ -16,6 +16,7 @@
 
 #include "rb.h"
 #include "appl.h"
+#include "recorder.h"
 
 struct Ticket;
 typedef struct Box Box;
@@ -145,6 +146,11 @@ struct World {
      * days and installing a machine for each would be paying for an emulator
      * to sit idle. */
     Box     *box;
+
+    /* THE MACRO RECORDER (decision 15). It lives in the World rather than in
+     * a session because what it records is what HAPPENED, and the desktop,
+     * the socket and a script are all ways of making things happen. */
+    Recorder rec;
 
     char     err[RB_ERR_MAX];
 };

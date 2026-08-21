@@ -229,6 +229,53 @@ func _desktop_checks() -> void:
 
 	_click_path(desk)
 	_terminal_checks(desk)
+	_recorder_checks(desk)
+
+# THE MACRO RECORDER (decision 15): the single most important accessibility
+# feature in the game, and the one whose failure mode is silent. A recorder
+# that emits a script which does not RUN teaches a player that they cannot
+# program, which is the precise opposite of the point -- so the gate records a
+# job through the UI, reads what came out, and runs it.
+func _recorder_checks(desk: Node) -> void:
+	var api := RunbookApi.new()
+	api.exec("rec.start gatetest")
+
+	# Two people, the same three steps each -- which is what makes a loop.
+	var people := [["gtest1", "u_00001", "Gate One", "sales"],
+				   ["gtest2", "u_00002", "Gate Two", "support"]]
+	for raw in people:
+		var p: Array = raw
+		api.exec("form.submit directory_01 account_new login=%s user_ref=%s display_name=\"%s\" dept=%s"
+				 % [p[0], p[1], p[2], p[3]])
+		api.exec("form.submit directory_01 member_add login=%s group=dept-%s" % [p[0], p[3]])
+		api.exec("form.submit mail_01 mailbox_new login=%s address=%s@harbrook.example quota_mb=2048 status=active"
+				 % [p[0], p[0]])
+	api.exec("rec.stop")
+
+	var st := api.objects(api.exec("rec.status"))
+	ck(st.size() == 1 and int(str((st[0] as Dictionary).get("steps", "0"))) == 6,
+	   "the recorder saw the six things that were done")
+	ck(st.size() == 1 and int(str((st[0] as Dictionary).get("loop_body", "0"))) == 3,
+	   "and noticed they were the same three steps, twice")
+
+	var script := api.exec("rec.script")
+	ck(script.find("for row in work:") >= 0, "so it wrote a loop, not six lines")
+	ck(script.find("login = row[0]") >= 0, "with the things that changed pulled into variables")
+	ck(script.find("\"dept-\" + dept") >= 0,
+	   "and the rule the player was following written down, not its results")
+	ck(script.find("Gate One") >= 0 and script.find("\\\"") >= 0,
+	   "and a two-word name still carries its quotes")
+
+	# THE ONE THAT MATTERS: does it run? A recorder whose output does not
+	# execute is a demo.
+	api.exec("rec.save /root/scripts/gatetest.py")
+	var ran := api.sh("py /root/scripts/gatetest.py")
+	ck(ran.find("error") < 0 and ran.find("syntax") < 0,
+	   "the recorded script runs on the machine without complaint: %s" % ran.get_slice("\n", 0))
+
+	var acct := api.exec("api.call directory_01 get_account login=gtest1")
+	ck(api.ok(acct) and acct.find("Gate One") >= 0,
+	   "and it really did the work -- the account is there, name and all")
 
 # THE TERMINAL IS A TERMINAL, and the two clipboards are X11's two.
 #

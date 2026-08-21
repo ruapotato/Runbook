@@ -10,6 +10,7 @@
 #include "proto.h"
 #include "ticket.h"
 #include "box.h"
+#include "recorder.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -169,6 +170,13 @@ static void cmd_help(Buf *out)
         "\n"
         "sh <command>                  a shell on your workstation (try: sh ls /)\n"
         "\n"
+        "rec.start [name]              watch what you do and write it down\n"
+        "rec.stop                      stop watching\n"
+        "rec.script                    what you did, as a Python script\n"
+        "rec.save [path]               and put it on your machine to run\n"
+        "rec.status                    what the recorder has\n"
+        "rec.clear                     throw it away\n"
+        "\n"
         "ticket.list [open|closed|all] [n]   the queue; reading it settles it\n"
         "ticket.get <id>               one ticket\n"
         "ticket.check <id>             every acceptance check, and why it fails\n"
@@ -287,6 +295,60 @@ bool proto_exec(Session *s, const char *line, Buf *out)
         if (sh.len && sh.p[sh.len - 1] != '\n') buf_putc(out, '\n');
         buf_puts(out, ".\n");
         buf_free(&sh);
+        return true;
+    }
+
+    /* THE RECORDER (decision 15). See recorder.h for what it is for. */
+    if (!strcmp(cmd, "rec.start")) {
+        recorder_start(w, argc > 1 ? argv[1] : "recorded");
+        ok(out, "recording. Do the job the way you normally would, then rec.stop");
+        return true;
+    }
+    if (!strcmp(cmd, "rec.stop")) {
+        recorder_stop(w);
+        buf_puts(out, "+OK stopped\n");
+        recorder_status(w, out);
+        buf_puts(out, "\n.\n");
+        return true;
+    }
+    if (!strcmp(cmd, "rec.status")) {
+        buf_puts(out, "+OK recorder\n");
+        recorder_status(w, out);
+        buf_puts(out, "\n.\n");
+        return true;
+    }
+    if (!strcmp(cmd, "rec.script")) {
+        buf_puts(out, "+OK script\n");
+        recorder_script(w, out);
+        buf_puts(out, ".\n");
+        return true;
+    }
+    if (!strcmp(cmd, "rec.clear")) {
+        recorder_clear(w);
+        ok(out, "cleared");
+        return true;
+    }
+    /* SAVED ONTO THE MACHINE, which is the step that makes it real: the
+     * script stops being something the game showed you and becomes a file on
+     * your own computer, that you can open, run and change. */
+    if (!strcmp(cmd, "rec.save")) {
+        char path[RB_VAL_MAX];
+        if (argc > 1) snprintf(path, sizeof path, "%s", argv[1]);
+        else          snprintf(path, sizeof path, "/root/scripts/%s.py", w->rec.name);
+        Buf script;
+        buf_init(&script);
+        recorder_script(w, &script);
+        Box *b = world_box(w);
+        /* mkdir -p, through the machine's own shell, so the directory is made
+         * the way a directory on that machine is made. */
+        Buf ignore;
+        buf_init(&ignore);
+        box_sh(b, "mkdir /root/scripts", &ignore);
+        buf_free(&ignore);
+        bool wrote = box_write(b, path, script.p ? script.p : "", script.len);
+        if (wrote) ok(out, "wrote %s (%zu bytes) -- run it with: sh py %s", path, script.len, path);
+        else       err(out, "could not write %s", path);
+        buf_free(&script);
         return true;
     }
 
@@ -586,6 +648,10 @@ bool proto_exec(Session *s, const char *line, Buf *out)
         if (nf < 0) { err(out, "%s", perr); return true; }
         ApiResult r;
         appl_call(w, in, argv[2], f, nf, s->prov, &r);
+        /* RECORDED, IF ANYONE IS WATCHING. Only what worked: a script made of
+         * the player's mistakes would be a cruel joke, and the retry they did
+         * by hand is not a step, it is the same step. */
+        if (r.status < 400) recorder_step(w, in->id, argv[2], f, nf, false);
         put_result(out, &r);
         buf_free(&r.body);
         return true;
@@ -617,6 +683,10 @@ bool proto_exec(Session *s, const char *line, Buf *out)
         ApiResult r;
         /* A form is operated by a person, whatever session asked for it. */
         appl_call(w, in, form->calls, f, nf, PROV_HAND, &r);
+        /* AND RECORDED AS THE API CALL IT WAS. Not as `form.submit` -- as the
+         * endpoint underneath, because that is what the button actually did
+         * and the entire point of the recorder is showing the player that. */
+        if (r.status < 400) recorder_step(w, in->id, form->calls, f, nf, true);
         /* The API latency already came out of the day; a human filling in a
          * form costs the rest of the two minutes. */
         int human = RB_FORM_MINUTES * 60000 - r.ms;

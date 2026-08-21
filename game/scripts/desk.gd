@@ -42,6 +42,7 @@ const WebUI  := preload("res://scripts/webui.gd")
 # note at the top of that file.
 const Term   := preload("res://scripts/terminal.gd")
 const Files  := preload("res://scripts/files.gd")
+const Editor := preload("res://scripts/editor.gd")
 
 # --- palette: light panels, blue wall (MATE's default, near enough) ---
 # NOMINAL's palette, verbatim, because it was already right: light panels, a
@@ -143,6 +144,8 @@ var _clock_cache: Dictionary = {}
 var _clock_age := 99.0
 var _last_minute := -1
 var _clock_flash := 0.0
+var _rec_rect := Rect2()
+var _rec_steps := -1          # -1 when not recording
 
 func _process(dt: float) -> void:
 	# THE CLOCK ONLY MOVES WHEN YOU SPEND TIME, and that is the design (§10):
@@ -156,6 +159,14 @@ func _process(dt: float) -> void:
 	_cwd_age += dt
 	if _clock_age > 0.25:
 		_clock_age = 0.0
+		if _rec_steps >= 0:
+			var rs: Array = api.objects(api.exec("rec.status"))
+			if rs.size() > 0:
+				var r0: Dictionary = rs[0]
+				if str(r0.get("recording", "false")) == "true":
+					_rec_steps = int(str(r0.get("steps", "0")))
+				else:
+					_rec_steps = -1
 		var info: Array = api.objects(api.exec("world.info"))
 		if info.size() > 0:
 			_clock_cache = info[0]
@@ -321,9 +332,29 @@ func _draw_top() -> void:
 		x -= bw + 8.0
 		top.draw_string(mono, Vector2(x - lw, 17), label,
 			HORIZONTAL_ALIGNMENT_LEFT, -1, 11, PANEL_INK)
+		x -= lw + 14.0
+
+		# THE RECORD BUTTON, in the notification area, on from the first
+		# morning. Decision 15 calls the recorder the single most important
+		# accessibility feature in the game, and a feature behind a menu is a
+		# feature most people never find. It is a red dot. Everybody knows
+		# what a red dot does.
+		_rec_rect = Rect2(x - 74, 5, 70, TOP_H - 10)
+		var recording := _rec_steps >= 0
+		top.draw_rect(_rec_rect, Color("#c0453c") if recording else PANEL_HI)
+		top.draw_rect(_rec_rect, PANEL_EDGE, false, 1.0)
+		top.draw_circle(_rec_rect.position + Vector2(11, _rec_rect.size.y * 0.5), 4.0,
+			Color.WHITE if recording else Color("#c0453c"))
+		top.draw_string(mono, Vector2(_rec_rect.position.x + 20, 17),
+			("%d" % _rec_steps) if recording else "record",
+			HORIZONTAL_ALIGNMENT_LEFT, 46, 11,
+			Color.WHITE if recording else PANEL_INK)
 
 func _top_input(e: InputEvent) -> void:
 	if not (e is InputEventMouseButton and e.pressed and e.button_index == MOUSE_BUTTON_LEFT):
+		return
+	if _rec_rect.has_point(e.position):
+		_toggle_record()
 		return
 	var tabs := _menu_tabs()
 	for i in range(tabs.size()):
@@ -367,6 +398,7 @@ func _menu_items(which: int) -> Array:
 			var apps := [{"label": "Ticket queue", "kind": "Queue", "icon": "notes"},
 						 {"label": "Terminal", "kind": "Terminal", "icon": "term"},
 						 {"label": "Files", "kind": "Files", "icon": "files"},
+						 {"label": "Script editor", "kind": "Editor", "icon": "editor"},
 						 {"label": "— Games —", "kind": "", "icon": "game"}]
 			apps.append_array(GAMES)
 			return apps
@@ -828,6 +860,42 @@ WHAT YOU ARE AIMED AT
   The company doubles, and then doubles again. Doing this by hand stops
   working long before that. How you deal with it is up to you."""
 
+# START, or STOP AND SHOW YOU WHAT YOU DID.
+#
+# Stopping does not put the script in a dialog with an OK button. It opens it
+# in an editor, on the machine, with a Run button -- because the point is not
+# that the player SEES a script, it is that they change one. The first edit
+# somebody makes to a program about their own work is the moment this whole
+# design is aiming at.
+func _toggle_record() -> void:
+	if _rec_steps >= 0:
+		api.exec("rec.stop")
+		_rec_steps = -1
+		var name := "recorded"
+		var st := api.objects(api.exec("rec.status"))
+		if st.size() > 0:
+			name = str((st[0] as Dictionary).get("name", "recorded"))
+		var path := "/root/scripts/%s.py" % name
+		api.exec("rec.save " + path)
+		_edit_file(path)
+	else:
+		api.exec("rec.start recorded")
+		_rec_steps = 0
+	if top: top.queue_redraw()
+
+func _edit_file(path: String) -> void:
+	var key := path.get_file()
+	var existing := _find_window(key)
+	if existing != null:
+		existing.visible = true
+		_raise(existing)
+		return
+	var ed := Editor.new()
+	ed.setup(api, path)
+	cascade = (cascade + 1) % 7
+	_win(key, Rect2(Vector2(120 + cascade * 20, TOP_H + 26 + cascade * 18), Vector2(660, 480)),
+		 ed, "editor")
+
 func _help_window() -> void:
 	var existing := _find_window("Help")
 	if existing != null:
@@ -929,9 +997,12 @@ func _launch(kind: String) -> void:
 		# frame, found immediately.
 		if t.is_inside_tree():
 			t.grab_focus()
+	elif kind == "Editor":
+		_edit_file("/root/scripts/untitled.py")
 	elif kind == "Files":
 		var fb := Files.new()
 		fb.setup(api)
+		fb.on_edit = func(p: String) -> void: _edit_file(p)
 		_win("Files", Rect2(at, Vector2(560, 430)), fb, "files")
 	elif kind.begins_with("appl:"):
 		var id := kind.substr(5)

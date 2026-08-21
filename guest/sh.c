@@ -368,6 +368,21 @@ static int substitute(char *s2, u64 cap)
     return 0;
 }
 
+/* $? as the shell sees it: the last status, as text. */
+static void set_status(int rc)
+{
+    char st[16];
+    int i = 0, v = rc < 0 ? -rc : rc;
+    char t[12];
+    int k = 0;
+    if (!v) t[k++] = '0';
+    while (v) { t[k++] = (char)('0' + v % 10); v /= 10; }
+    if (rc < 0) st[i++] = '-';
+    while (k) st[i++] = t[--k];
+    st[i] = 0;
+    g_setvar("?", st);
+}
+
 /* ------------------------------------------------------------- SCRIPTS --
  *
  * `sh path` runs the file at `path`, a line at a time, the way every shell on
@@ -407,7 +422,18 @@ static int run_script(const char *path)
         while (e < (u64)n && script[e] != '\n') e++;
         script[e] = 0;
         char *l = g_trim(script + i);
-        if (*l && *l != '#') rc = run_list(l);
+        if (*l && *l != '#') {
+            rc = run_list(l);
+            /* $? AFTER EVERY LINE, not just when the shell exits.
+             *
+             * Interactively, one command line is one `sh` process, and $?
+             * survives because it is set on the way out. A script is MANY
+             * lines in ONE process, so nothing set it between them and
+             * `echo $?` inside a script printed nothing at all -- which
+             * quietly removes the only way a shell script has of asking
+             * whether the last thing worked. */
+            set_status(rc);
+        }
         i = e + 1;
     }
     return rc;
@@ -440,16 +466,7 @@ void _start(void)
     int rc = run_list(cmd);
     /* $? outlives this process, because this process is one command line and
      * the person asking is on the next one. */
-    {
-        char st[16]; int i = 0, v = rc < 0 ? -rc : rc;
-        char t[12]; int k = 0;
-        if (!v) t[k++] = '0';
-        while (v) { t[k++] = (char)('0' + v % 10); v /= 10; }
-        if (rc < 0) st[i++] = '-';
-        while (k) st[i++] = t[--k];
-        st[i] = 0;
-        g_setvar("?", st);
-    }
+    set_status(rc);
     g_exit(rc);
 }
 

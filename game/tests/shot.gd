@@ -25,42 +25,35 @@ func _place(desk: Node, key: String, at: Vector2, sz: Vector2) -> void:
 func _tick() -> void:
 	frames += 1
 	if frames == 3:
-		# Open a few things and leave them where a person would have dragged
-		# them -- overlapping, at angles, one half behind another. A tidy grid
-		# would be a lie about how this desktop works: the windows are free
-		# floating and the screenshot should say so.
+		# The recorder's story, in one picture: a job done twice, the script
+		# it produced, and an editor to change it in.
 		var desk: Node = root.get_child(root.get_child_count() - 1)
 		if desk.has_method("_launch"):
-			desk._launch("appl:mail_01")
-			desk._launch("appl:fileserver_01")
-			desk._launch("Terminal")
+			var api: RunbookApi = desk.api
+			api.exec("rec.start onboard")
+			var people := [["esedgeton", "u_00041", "Emlin Sedgeton", "sales"],
+						   ["sharrcroft", "u_00042", "Sten Harrcroft", "support"]]
+			for raw in people:
+				var p: Array = raw
+				api.exec("form.submit directory_01 account_new login=%s user_ref=%s display_name=\"%s\" dept=%s" % [p[0], p[1], p[2], p[3]])
+				api.exec("form.submit directory_01 member_add login=%s group=dept-%s" % [p[0], p[3]])
+				api.exec("form.submit mail_01 mailbox_new login=%s address=%s@harbrook.example quota_mb=2048 status=active" % [p[0], p[0]])
+			api.exec("rec.stop")
+			api.exec("rec.save /root/scripts/onboard.py")
+
+			desk._launch("Queue")
 			desk._launch("appl:directory_01")
-			desk._launch("Files")
-			desk._launch("game:gsolitaire")
-			_place(desk, "mail_01", Vector2(690, 60), Vector2(560, 236))
-			_place(desk, "Terminal", Vector2(300, 430), Vector2(700, 330))
-			_place(desk, "fileserver_01", Vector2(742, 316), Vector2(520, 250))
-			_place(desk, "Solitaire", Vector2(16, 64), Vector2(410, 300))
-			_place(desk, "Files", Vector2(300, 96), Vector2(420, 300))
-			_place(desk, "directory_01", Vector2(150, 150), Vector2(560, 300))
-			var f: Node = desk._find_window("fileserver_01")
-			if f != null:
-				var fc: Node = f.get_meta("content")
-				fc.tab = -1
-				fc._build()
-				fc._refresh()
+			desk._edit_file("/root/scripts/onboard.py")
+			desk._launch("Terminal")
+
+			_place(desk, "Queue", Vector2(8, 30), Vector2(430, 470))
+			_place(desk, "directory_01", Vector2(446, 30), Vector2(500, 262))
+			_place(desk, "onboard.py", Vector2(560, 190), Vector2(700, 420))
+			_place(desk, "Terminal", Vector2(8, 508), Vector2(540, 264))
 			var t: Node = desk._find_window("Terminal")
 			if t != null:
 				var tc: Node = t.get_meta("content")
-				tc.feed("cat /root/examples/onboard.py\n")
-			desk._launch("Queue")
-			_place(desk, "Queue", Vector2(24, 300), Vector2(620, 460))
-			var q: Node = desk._find_window("Queue")
-			if q != null:
-				var qc: Node = q.get_meta("content")
-				if qc.tickets.size() > 0:
-					qc.selected = 0
-					qc._check()
+				tc.feed("py /root/scripts/onboard.py\n")
 	if frames < 14:
 		return
 	var img := root.get_texture().get_image()
