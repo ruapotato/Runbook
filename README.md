@@ -65,9 +65,51 @@ machine:  ~2439 calls/second scripted, so a 6,000-call Act III day costs ~2.5 s
 
 The Lua fallback is not needed. `make machine` re-runs the measurement.
 
-Still missing: a Python-subset interpreter on the machine (the shell is
-bash-shaped and already scriptable; the handoff wants both), and the macro
-recorder.
+## Scripting
+
+Two layers, both on the machine, both real.
+
+**The shell** is bash-shaped: `for … do … done`, variables, `$(…)`, pipelines,
+redirection, `&&`/`||`, globbing, quoting — and scripts in files.
+
+**`/bin/py` is a Python subset** — indentation, `if`/`elif`/`else`, `while`,
+`for`/`in`, `def`/`return`, integers, strings, lists and dicts. It is
+NOMINAL's lexer, compiler and bytecode VM compiled for RISC-V, so a script is
+lexed, compiled and executed *by a 43 KB program on the disk*, on the emulated
+CPU. That is decision 14 (Python, because the audience knows it) landing on
+decision 13 (it runs on the machine).
+
+There is no floating point, because [the CPU has none by
+design](machine/cpu.h) — integers, strings, lists and dicts. Nobody
+onboarding four hundred people needs a cosine.
+
+```python
+# /root/examples/onboard.py -- shipped on the disk, and it works
+for line in lines(api("ticket.list open 40")):
+    t = json(line)
+    u = json(api("user.get " + t["ref"]))
+    login = lower(sub(u["given"], 0, 1)) + lower(u["family"])
+    ...
+    if find(api("ticket.check " + t["id"]), " passes") >= 0:
+        print("done", t["id"], login)
+```
+
+That script closes the whole queue, and the world records it as done **by a
+script**. Its comments name the three things it does wrong on purpose — no
+retry, no verification, no exceptions — because those three *are* Act II.
+
+**Both performance questions are measured, not guessed:**
+
+```
+machine:  0.42 ms per API call from a shell loop  (~2,400/second)
+machine:  0.07 ms per API call from a py script   (~15,000/second)
+```
+
+The interpreter is *faster* than shell+`rb`, because it does not spawn a
+process per call. A 6,000-call Act III day costs under half a second.
+
+Still missing: the macro recorder (§16.2) — the on-ramp for players who will
+never open a terminal. The examples on the disk are half of that ramp.
 
 ## The desktop
 

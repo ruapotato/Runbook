@@ -52,7 +52,7 @@ func _tick() -> void:
 			var t: Node = desk._find_window("Terminal")
 			if t != null:
 				var tc: Node = t.get_meta("content")
-				tc.feed("rb ticket.list open 1\n")
+				tc.feed("cat /root/examples/onboard.py\n")
 			desk._launch("Queue")
 			_place(desk, "Queue", Vector2(24, 300), Vector2(620, 460))
 			var q: Node = desk._find_window("Queue")

@@ -36,7 +36,7 @@ TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
   echo
 } > "$TMP/h"
 
-for p in init rc svcinit login sh ls cat ps ns pkg stat chmod mount umount chroot links cp mv rm touch grep head uname whoami df man zbl-install zbl-mkconfig mkinitrd getty fsck mountall sed ed wc echo blkid svc kill syslogd netd udevd crond ntpd httpd nft auditd sshd postfix ldd dmesg rcon find netstat ping reboot open nomde fortune cowsay sl du tail mkdir rev seq rot13 ip arp traceroute tcpdump ss voice rb; do
+for p in init rc svcinit login sh ls cat ps ns pkg stat chmod mount umount chroot links cp mv rm touch grep head uname whoami df man zbl-install zbl-mkconfig mkinitrd getty fsck mountall sed ed wc echo blkid svc kill syslogd netd udevd crond ntpd httpd nft auditd sshd postfix ldd dmesg rcon find netstat ping reboot open nomde fortune cowsay sl du tail mkdir rev seq rot13 ip arp traceroute tcpdump ss voice rb py; do
     # -Ttext keeps every program at a fixed load address: same layout every
     # run, on every host, which is one more thing determinism does not have
     # to be careful about.
@@ -44,8 +44,20 @@ for p in init rc svcinit login sh ls cat ps ns pkg stat chmod mount umount chroo
     # guestbin.h in place and say nothing useful, so the game silently kept
     # running the old binary and the change appeared to have no effect. Say
     # so, loudly, and stop.
-    if ! $CC $CFLAGS -fuse-ld=lld -Wl,-Ttext=0x10000 -Wl,--build-id=none \
-             -o "$TMP/$p.elf" "guest/$p.c"; then
+    # SOME PROGRAMS ARE MORE THAN ONE FILE. /bin/py is the lexer, compiler
+    # and bytecode VM lifted from NOMINAL plus a guest heap, and those stay
+    # SEPARATE translation units so they remain byte-identical to the
+    # originals -- and because two of them have a static `emit`.
+    EXTRA=""
+    [ -d "guest/$p.d" ] && EXTRA=$(ls guest/$p.d/*.c 2>/dev/null || true)
+    # -Iguest/$p.d FIRST, ahead of everything in CFLAGS. py.c includes
+    # "nom.h" and there are two of those -- the host shim in machine/ that
+    # lets NOMINAL's kernel compile here, and the guest one that lets its
+    # LANGUAGE compile here. Include order is the only thing that decides
+    # which, and getting it wrong produced a fatal error about a header the
+    # guest has no business seeing.
+    if ! $CC -Iguest/$p.d $CFLAGS -fuse-ld=lld -Wl,-Ttext=0x10000 -Wl,--build-id=none \
+             -o "$TMP/$p.elf" "guest/$p.c" $EXTRA; then
         echo "mkguest: FAILED to build guest/$p.c -- $OUT left UNCHANGED" >&2
         exit 1
     fi

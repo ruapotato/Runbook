@@ -2139,6 +2139,28 @@ static const Package PKG_SHELL = {
        * script on this box can do the job. Without it the machine is a very
        * elaborate text editor. See guest/rb.c. */
       { "/bin/rb", NULL, 0755, NULL },
+      /* THE LANGUAGE. A Python subset -- indentation, if/elif/else, while,
+       * for/in, def, integers, strings, lists and dicts -- lexed, compiled to
+       * bytecode and executed BY A PROGRAM ON THIS DISK, on this CPU.
+       * Decision 14 asked for Python because the audience knows it; decision
+       * 13 asked for it to run here. See guest/py.c. */
+      { "/bin/py", NULL, 0755, NULL },
+      /* SCRIPTS THAT WORK, ON THE DISK, FROM THE FIRST MORNING.
+       *
+       * Handoff §15 calls M4 the hypothesis: does the relief of the first
+       * script land? A player who has to invent the whole idea of automation
+       * from a blank prompt mostly does not get there, and the macro recorder
+       * (§16.2, still to build) is the on-ramp for the ones who never will.
+       *
+       * These are the other half of that ramp and they cost nothing: a
+       * working script you can read, run, and then change. The comments in
+       * onboard.py name the three things it does WRONG on purpose -- no
+       * retry, no verification, no exceptions -- because those three are Act
+       * II, and a player who finds them by reading is a player who has
+       * already understood what the act is about. */
+      { "/root/examples/README", NULL, 0644, NULL },
+      { "/root/examples/queue.sh", NULL, 0755, NULL },
+      { "/root/examples/onboard.py", NULL, 0644, NULL },
       { "/bin/ed", NULL, 0755, NULL },
       { "/bin/echo", NULL, 0755, NULL },
       { "/bin/wc", NULL, 0755, NULL },
@@ -2346,7 +2368,7 @@ static const Package PKG_SHELL = {
         "\n"
         "1.4  -- find and netstat, because everybody reached for them and they were\n"
         "       not there.\n", 0644, NULL },
-    }, 56   /* RUNBOOK: 55 -> 56, for /bin/rb */
+    }, 60   /* RUNBOOK: 55 -> 60: /bin/rb, /bin/py and three examples */
 };
 
 
@@ -4210,6 +4232,28 @@ static const Package PKG_RESCUE_TOOLS = {
        * script on this box can do the job. Without it the machine is a very
        * elaborate text editor. See guest/rb.c. */
       { "/bin/rb", NULL, 0755, NULL },
+      /* THE LANGUAGE. A Python subset -- indentation, if/elif/else, while,
+       * for/in, def, integers, strings, lists and dicts -- lexed, compiled to
+       * bytecode and executed BY A PROGRAM ON THIS DISK, on this CPU.
+       * Decision 14 asked for Python because the audience knows it; decision
+       * 13 asked for it to run here. See guest/py.c. */
+      { "/bin/py", NULL, 0755, NULL },
+      /* SCRIPTS THAT WORK, ON THE DISK, FROM THE FIRST MORNING.
+       *
+       * Handoff §15 calls M4 the hypothesis: does the relief of the first
+       * script land? A player who has to invent the whole idea of automation
+       * from a blank prompt mostly does not get there, and the macro recorder
+       * (§16.2, still to build) is the on-ramp for the ones who never will.
+       *
+       * These are the other half of that ramp and they cost nothing: a
+       * working script you can read, run, and then change. The comments in
+       * onboard.py name the three things it does WRONG on purpose -- no
+       * retry, no verification, no exceptions -- because those three are Act
+       * II, and a player who finds them by reading is a player who has
+       * already understood what the act is about. */
+      { "/root/examples/README", NULL, 0644, NULL },
+      { "/root/examples/queue.sh", NULL, 0755, NULL },
+      { "/root/examples/onboard.py", NULL, 0644, NULL },
       { "/bin/ed", NULL, 0755, NULL },
       { "/bin/echo", NULL, 0755, NULL },
       { "/bin/wc", NULL, 0755, NULL },
@@ -4336,6 +4380,113 @@ void image_generated(const Machine *m, const char *path, Buf *out)
         buf_put(out, (const char *)GUEST_ED, GUEST_ED_LEN);
     else if (strcmp(path, "/bin/rb") == 0)
         buf_put(out, (const char *)GUEST_RB, GUEST_RB_LEN);
+    else if (strcmp(path, "/bin/py") == 0)
+        buf_put(out, (const char *)GUEST_PY, GUEST_PY_LEN);
+    else if (strcmp(path, "/root/examples/README") == 0)
+        buf_puts(out,
+        "/root/examples -- scripts that work.\n"
+        "\n"
+        "  sh /root/examples/queue.sh          what is waiting, in shell\n"
+        "  py /root/examples/onboard.py        the whole queue, provisioned\n"
+        "\n"
+        "This is your workstation. It is a real computer: ls, cat, grep, pipes, for\n"
+        "loops, and files you can edit with ed. Two things on it are not ordinary:\n"
+        "\n"
+        "  rb    the company's API, from the command line. Everything the desktop's\n"
+        "        forms do goes through it. `rb help` lists every verb there is.\n"
+        "\n"
+        "  py    a Python subset -- if/elif/else, while, for/in, def, integers,\n"
+        "        strings, lists and dicts. `py` on its own lists what it knows.\n"
+        "\n"
+        "Neither is magic and neither is a game mechanic with a syntax. `rb` is a\n"
+        "program in /bin and `py` is another one; you can `cat /bin/rb` and watch it\n"
+        "fail to be text, because it is an ELF binary compiled for this machine.\n"
+        "\n"
+        "The shortest useful thing you can type:\n"
+        "\n"
+        "  rb ticket.list open\n"
+        "\n"
+        "The shortest useful thing you can write:\n"
+        "\n"
+        "  for t in $(rb ticket.list open | grep TCK); do echo $t; done\n"
+        "\n");
+    else if (strcmp(path, "/root/examples/queue.sh") == 0)
+        buf_puts(out,
+        "# /root/examples/queue.sh\n"
+        "#\n"
+        "# The smallest useful thing, and a good first script: what is waiting.\n"
+        "#\n"
+        "#   sh /root/examples/queue.sh\n"
+        "#\n"
+        "# Everything here is /bin/rb, which speaks the same API the desktop's buttons\n"
+        "# send. If you can click it, you can type it; if you can type it, you can put\n"
+        "# it in a file like this one.\n"
+        "\n"
+        "echo \"--- the queue ---\"\n"
+        "rb ticket.stats\n"
+        "echo\n"
+        "echo \"--- open tickets ---\"\n"
+        "rb ticket.list open 10\n"
+        "\n");
+    else if (strcmp(path, "/root/examples/onboard.py") == 0)
+        buf_puts(out,
+        "# /root/examples/onboard.py\n"
+        "#\n"
+        "# Every new starter in the queue, provisioned across all three appliances.\n"
+        "#\n"
+        "# This is a working script, not a sketch: copy it, change it, break it. It is\n"
+        "# a file on your disk like any other -- `cat` it, `cp` it, run it with\n"
+        "#   py /root/examples/onboard.py\n"
+        "#\n"
+        "# What it does that a form cannot:\n"
+        "#   * it looks BEFORE it writes, because the login the convention gives you\n"
+        "#     may already belong to somebody;\n"
+        "#   * it does the whole queue while you make tea.\n"
+        "#\n"
+        "# What it does not do yet, and what will bite you in a few weeks:\n"
+        "#   * it does not retry anything. One call in a few hundred fails, and this\n"
+        "#     script will not notice.\n"
+        "#   * it does not check what came back. One of your appliances answers 200 to\n"
+        "#     everything, including its failures.\n"
+        "#   * it assumes every ticket is an ordinary one. They are not.\n"
+        "#\n"
+        "# Fixing those three is Act II.\n"
+        "\n"
+        "def convention(given, family):\n"
+        "    return lower(sub(given, 0, 1)) + lower(family)\n"
+        "\n"
+        "done = 0\n"
+        "for line in lines(api(\"ticket.list open 40\")):\n"
+        "    if find(line, \"user.onboard\") < 0:\n"
+        "        continue\n"
+        "    t = json(line)\n"
+        "    who = t[\"ref\"]\n"
+        "    u = json(api(\"user.get \" + who))\n"
+        "    dept = u[\"dept\"]\n"
+        "\n"
+        "    # The convention gives a login. The directory decides whether it is free.\n"
+        "    base = convention(u[\"given\"], u[\"family\"])\n"
+        "    login = base\n"
+        "    n = 1\n"
+        "    while find(api(\"api.call directory_01 get_account login=\" + login), \"user_ref\") >= 0:\n"
+        "        n = n + 1\n"
+        "        login = base + str(n)\n"
+        "\n"
+        "    api(\"api.call directory_01 create_account login=\" + login + \" user_ref=\" + who + \" display_name=\" + u[\"given\"] + \" dept=\" + dept + \" status=active\")\n"
+        "    api(\"api.call directory_01 add_member login=\" + login + \" group=dept-\" + dept)\n"
+        "    api(\"api.call mail_01 create_mailbox login=\" + login + \" address=\" + login + \"@harbrook.example quota_mb=2048 status=active\")\n"
+        "    api(\"api.call fileserver_01 create_home login=\" + login + \" path=/home/\" + login + \" quota_mb=8192\")\n"
+        "    api(\"api.call fileserver_01 grant_share login=\" + login + \" share=share-\" + dept + \" access=rw\")\n"
+        "\n"
+        "    # Ask the game, which is the only opinion that counts.\n"
+        "    if find(api(\"ticket.check \" + t[\"id\"]), \" passes\") >= 0:\n"
+        "        done = done + 1\n"
+        "        print(\"done\", t[\"id\"], login)\n"
+        "    else:\n"
+        "        print(\"stuck\", t[\"id\"], login)\n"
+        "\n"
+        "print(\"onboarded\", done)\n"
+        "\n");
     else if (strcmp(path, "/bin/echo") == 0)
         buf_put(out, (const char *)GUEST_ECHO, GUEST_ECHO_LEN);
     else if (strcmp(path, "/bin/wc") == 0)
@@ -4619,7 +4770,15 @@ void machine_install(Machine *m, uint64_t seed)
         "/var/lib/pkg", "/var/cache", "/var/spool", "/var/spool/cron",
         "/etc/audit", "/etc/default", "/etc/httpd", "/etc/logrotate.d",
         "/etc/postfix", "/srv", "/srv/www", "/etc/pkg", "/etc/pkg/repos.d",
-        "/run", NULL
+        "/run",
+        /* RUNBOOK: declared, not left to vfs_mkfile to invent. A directory
+         * created implicitly as a side effect of writing a file in it gets no
+         * mode, so every file under /root/examples existed, had a size, and
+         * could not be opened -- `ls` showed them and `cat` said "cannot
+         * read", which is a confusing pair of answers to get about the same
+         * file. */
+        "/root/examples",
+        NULL
     };
     for (int i = 0; DIRS[i]; i++) vfs_mkdir(&m->disk, DIRS[i]);
 

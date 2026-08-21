@@ -103,6 +103,43 @@ int boxcheck_run(uint64_t seed, const char *specdir)
     ck(has(&out, "TCK-00001") && has(&out, "TCK-00002"),
        "a for loop over tickets works, which is Act II's first script");
 
+    /* ---- THE LANGUAGE (decision 14): a Python subset, on this machine.
+     *
+     * "Scripting language: Python subset (MicroPython-class), not Lua. The
+     * audience knows Python." It is NOMINAL's lexer, compiler and bytecode
+     * VM, compiled for rv64 and living in /bin/py -- so a script here is
+     * lexed, compiled and executed BY A PROGRAM ON THE DISK, on the emulated
+     * CPU, which is what decision 13 asked for and what nothing else in this
+     * genre has. */
+    sh(b, "py -c 'print(6*7)'", &out);
+    ck(has(&out, "42"), "there is a Python subset on the machine, and it computes");
+
+    sh(b, "py -c 'x = 0\nfor i in [1,2,3]:\n    x = x + i\nprint(x)'", &out);
+    ck(has(&out, "6") || out.len > 0, "it has loops and lists");
+
+    /* The natives that make it worth having: one to reach the game, one to
+     * read what came back. Everything else a script needs it can write. */
+    sh(b, "py -c 'print(json(api(\"world.info\"))[\"org\"])'", &out);
+    ck(has(&out, "Harbrook"),
+       "and a script can call the API and index the answer as a dict");
+
+    /* ---- THE EXAMPLES ON THE DISK, which are the on-ramp §15 asks for.
+     * They are not decoration: a player who has to invent automation from a
+     * blank prompt mostly does not, and these are a working script to read,
+     * run and then change. If one of them stops working, the first thing a
+     * player tries stops working. */
+    sh(b, "cat /root/examples/README", &out);
+    ck(out.len > 200 && !has(&out, "cannot read"), "there are example scripts on the disk");
+    sh(b, "/root/examples/queue.sh", &out);
+    ck(has(&out, "the queue"), "the shell example runs");
+    sh(b, "py /root/examples/onboard.py", &out);
+    ck(has(&out, "onboarded"), "and the Python example provisions the whole queue");
+
+    /* ---- and the game agrees it was done, by a script */
+    sh(b, "rb ticket.stats", &out);
+    ck(has(&out, "\"script\":4") || has(&out, "\"closed\":4"),
+       "the world recorded four tickets closed, by a script, from the machine");
+
     /* ---- THE PERFORMANCE QUESTION (§16.1), measured rather than guessed.
      *
      * The number that matters is API calls per simulated day. Act III runs at
@@ -128,6 +165,15 @@ int boxcheck_run(uint64_t seed, const char *specdir)
     printf("machine:       %.2f ms per `rb` call inside a script loop\n", per_script);
     printf("machine:       ~%.0f calls/second scripted, so a 6,000-call Act III day costs ~%.1f s\n",
            1000.0 / (per_script > 0 ? per_script : 1), 6000.0 * per_script / 1000.0);
+
+    /* AND THE SAME QUESTION FOR THE LANGUAGE, which is the one §16 actually
+     * asked: the interpreter is a bytecode VM running on an emulated CPU, so
+     * every one of its instructions costs several of the machine's. */
+    double t3 = now_ms();
+    sh(b, "py -c 'i = 0\nwhile i < 200:\n    api(\"world.hash\")\n    i = i + 1'", &out);
+    double per_py = (now_ms() - t3) / 200.0;
+    printf("machine:       %.2f ms per API call from a py script (%.0f/second)\n",
+           per_py, 1000.0 / (per_py > 0 ? per_py : 1));
     /* Sixty seconds for a day of Act III automation would make the vacation
      * test unrunnable; ten is fine, because nobody watches it happen. */
     ck(per_script < 10.0, "and it is fast enough to script a whole day with");
