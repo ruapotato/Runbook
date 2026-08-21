@@ -9,6 +9,7 @@
  */
 #include "proto.h"
 #include "ticket.h"
+#include "box.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -166,6 +167,8 @@ static void cmd_help(Buf *out)
         "user.offboard <id>            idempotent\n"
         "depts                         valid department names\n"
         "\n"
+        "sh <command>                  a shell on your workstation (try: sh ls /)\n"
+        "\n"
         "ticket.list [open|closed|all] [n]   the queue; reading it settles it\n"
         "ticket.get <id>               one ticket\n"
         "ticket.check <id>             every acceptance check, and why it fails\n"
@@ -249,6 +252,41 @@ bool proto_exec(Session *s, const char *line, Buf *out)
         buf_puts(out, "+OK depts\n");
         for (int i = 0; i < RB_DEPT__N; i++) buf_printf(out, "%s\n", rb_dept_name[i]);
         buf_puts(out, ".\n");
+        return true;
+    }
+
+    /* THE WORKSTATION.
+     *
+     * `sh` runs one command line on the player's own computer -- a real
+     * emulated machine with a real disk, running a real /bin/sh compiled for
+     * it. This is not a shell-shaped command interpreter; it is a shell,
+     * loaded off a disk and executed instruction by instruction, and if you
+     * corrupt it it stops working the way a corrupted binary stops working.
+     *
+     * It is here rather than only in the client for the usual reason
+     * (decision 7): the socket, the desktop and the reference agent all reach
+     * the same machine through the same verb. */
+    if (!strcmp(cmd, "sh")) {
+        if (argc < 2) {
+            err(out, "sh <command>   -- a shell on your workstation. Try 'sh ls /'");
+            return true;
+        }
+        /* The line, reassembled: the shell wants the whole thing, quoting and
+         * all, and split() has already taken the quotes off. Rebuild from the
+         * original rather than from argv so `sh echo "a b"` reaches the shell
+         * as the player typed it. */
+        const char *rest = line;
+        while (*rest == ' ') rest++;
+        rest += 2;                       /* past "sh" */
+        while (*rest == ' ') rest++;
+        Buf sh;
+        buf_init(&sh);
+        box_sh(world_box(w), rest, &sh);
+        buf_puts(out, "+OK\n");
+        if (sh.len) buf_put(out, sh.p, sh.len);
+        if (sh.len && sh.p[sh.len - 1] != '\n') buf_putc(out, '\n');
+        buf_puts(out, ".\n");
+        buf_free(&sh);
         return true;
     }
 

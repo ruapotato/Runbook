@@ -27,9 +27,47 @@ vacation: PASS  no service went over nominal capacity
 vacation: the company ran itself for 7 days. Go on holiday.
 ```
 
-Still missing: M4 — scripting on the emulated machine, and the macro recorder.
-That is the milestone that answers *does the relief land*, and no gate can
-answer it.
+## The machine
+
+Under the desktop is a whole computer: **an RV64IM emulator running a real
+kernel, a real disk, a real package database and a real `/bin/sh`**, lifted
+from `~/NOMINAL` and compiled unchanged against a shim (`machine/nom.h`). The
+programs are real RISC-V binaries — the boot loads them off the disk and
+executes them instruction by instruction.
+
+That is decision 13, the moat: *no other game in this space has a real
+interpreter on a real machine.* A script here is not a game feature with a
+syntax; it is a file on a disk, run by a shell, on a CPU. You can `cat` it,
+`cp` it, break it and fix it, and everything you learn doing that is true of
+every Unix box you will ever touch.
+
+The bridge between the machine and the game is **one syscall and one program**:
+
+```sh
+$ rb ticket.list open
+$ for t in TCK-00001 TCK-00002; do rb ticket.check $t; done
+$ echo 'rb api.call directory_01 list_accounts' > /root/onboard
+$ /root/onboard
+```
+
+`/bin/rb` speaks the *same protocol* as the desktop's forms, the socket and
+the reference agent. Anything the player can automate, the game can test.
+
+**§16's first open question — "does the emulated interpreter perform?" — is
+now measured rather than guessed:**
+
+```
+machine:  91 ms to install and boot an RV64IM machine
+machine:  3.61 ms per `rb` call typed at a prompt
+machine:  0.41 ms per `rb` call inside a script loop
+machine:  ~2439 calls/second scripted, so a 6,000-call Act III day costs ~2.5 s
+```
+
+The Lua fallback is not needed. `make machine` re-runs the measurement.
+
+Still missing: a Python-subset interpreter on the machine (the shell is
+bash-shaped and already scriptable; the handoff wants both), and the macro
+recorder.
 
 ## The desktop
 

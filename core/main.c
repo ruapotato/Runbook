@@ -16,6 +16,7 @@ int mancheck_run(uint64_t seed, const char *specdir); /* mancheck.c */
 int play_run(uint64_t seed, const char *specdir, int days, bool naive, int users_cap, const char *out); /* play.c */
 int naive_gate_run(uint64_t seed, const char *specdir, int days);                  /* play.c */
 int vacation_run(uint64_t seed, const char *specdir, int days, int at_users);      /* play.c */
+int boxcheck_run(uint64_t seed, const char *specdir);                              /* boxcheck.c */
 
 #define DEFAULT_SEED 424242ULL
 #define DEFAULT_PORT 7711
@@ -26,6 +27,7 @@ static void usage(void)
          "\n"
          "  runbook --health [--seed N]        the health gate\n"
          "  runbook --mancheck                 every documented example, executed\n"
+         "  runbook --machine                  the workstation: boots, shells, scripts, speed\n"
          "  runbook --play [--days N]          a reference agent plays, and reports\n"
          "  runbook --play --naive             let a bot that does not branch loose, and watch it drown\n"
          "  runbook --naive-gate               the §8 degeneracy band, as a gate\n"
@@ -73,7 +75,7 @@ int main(int argc, char **argv)
 {
     uint64_t seed = DEFAULT_SEED;
     int  days = 0, port = DEFAULT_PORT;
-    bool health = false, serve = false, verbose = false, mancheck = false;
+    bool health = false, serve = false, verbose = false, mancheck = false, machine = false;
     bool play = false, naive = false, gate = false;
     int users_cap = 0, vacation = 0;
     const char *out_path = NULL, *exec_line = NULL, *specdir = NULL;
@@ -82,6 +84,7 @@ int main(int argc, char **argv)
         const char *a = argv[i];
         if      (!strcmp(a, "--health"))  health = true;
         else if (!strcmp(a, "--mancheck")) mancheck = true;
+        else if (!strcmp(a, "--machine"))  machine = true;
         else if (!strcmp(a, "--play"))    play = true;
         else if (!strcmp(a, "--naive"))   { play = true; naive = true; }
         else if (!strcmp(a, "--naive-gate")) gate = true;
@@ -108,6 +111,7 @@ int main(int argc, char **argv)
 
     if (health)   return health_run(seed, specdir);
     if (mancheck) return mancheck_run(seed, specdir);
+    if (machine)  return boxcheck_run(seed, specdir);
     if (gate)     return naive_gate_run(seed, specdir, days ? days : 90);
     if (vacation) return vacation_run(seed, specdir, vacation, users_cap ? users_cap : 4000);
     if (play)     return play_run(seed, specdir, days ? days : 60, naive, users_cap, out_path);

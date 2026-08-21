@@ -35,11 +35,13 @@ func _tick() -> void:
 			desk._launch("appl:fileserver_01")
 			desk._launch("Terminal")
 			desk._launch("appl:directory_01")
+			desk._launch("Files")
 			desk._launch("game:gsolitaire")
 			_place(desk, "mail_01", Vector2(690, 60), Vector2(560, 236))
 			_place(desk, "Terminal", Vector2(300, 430), Vector2(700, 330))
 			_place(desk, "fileserver_01", Vector2(742, 316), Vector2(520, 250))
-			_place(desk, "Solitaire", Vector2(16, 64), Vector2(430, 330))
+			_place(desk, "Solitaire", Vector2(16, 64), Vector2(410, 300))
+			_place(desk, "Files", Vector2(300, 96), Vector2(420, 300))
 			_place(desk, "directory_01", Vector2(150, 150), Vector2(560, 300))
 			var f: Node = desk._find_window("fileserver_01")
 			if f != null:
@@ -50,7 +52,7 @@ func _tick() -> void:
 			var t: Node = desk._find_window("Terminal")
 			if t != null:
 				var tc: Node = t.get_meta("content")
-				tc.feed("ticket.check TCK-00001\n")
+				tc.feed("rb ticket.list open 1\n")
 			desk._launch("Queue")
 			_place(desk, "Queue", Vector2(24, 300), Vector2(620, 460))
 			var q: Node = desk._find_window("Queue")

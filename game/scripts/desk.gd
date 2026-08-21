@@ -41,6 +41,7 @@ const WebUI  := preload("res://scripts/webui.gd")
 # NOMINAL's terminal, not the one I wrote and then had to throw away. See the
 # note at the top of that file.
 const Term   := preload("res://scripts/terminal.gd")
+const Files  := preload("res://scripts/files.gd")
 
 # --- palette: light panels, blue wall (MATE's default, near enough) ---
 # NOMINAL's palette, verbatim, because it was already right: light panels, a
@@ -152,6 +153,7 @@ func _process(dt: float) -> void:
 	if api == null or top == null:
 		return
 	_clock_age += dt
+	_cwd_age += dt
 	if _clock_age > 0.25:
 		_clock_age = 0.0
 		var info: Array = api.objects(api.exec("world.info"))
@@ -231,7 +233,8 @@ static func _icon_for(kind: String) -> String:
 func _desktop_items() -> Array:
 	_ensure()
 	var out := [{"label": "Queue", "kind": "Queue", "icon": "notes"},
-				{"label": "Terminal", "kind": "Terminal", "icon": "term"}]
+				{"label": "Terminal", "kind": "Terminal", "icon": "term"},
+				{"label": "Files", "kind": "Files", "icon": "files"}]
 	for raw in api.objects(api.exec("appl.list")):
 		var a: Dictionary = raw
 		out.append({"label": str(a.get("id", "?")), "kind": "appl:%s" % a.get("id", "?"),
@@ -363,6 +366,7 @@ func _menu_items(which: int) -> Array:
 		0:
 			var apps := [{"label": "Ticket queue", "kind": "Queue", "icon": "notes"},
 						 {"label": "Terminal", "kind": "Terminal", "icon": "term"},
+						 {"label": "Files", "kind": "Files", "icon": "files"},
 						 {"label": "— Games —", "kind": "", "icon": "game"}]
 			apps.append_array(GAMES)
 			return apps
@@ -851,6 +855,19 @@ func _draw_help(c: Control) -> void:
 		c.draw_string(mono, Vector2(14, y), line, HORIZONTAL_ALIGNMENT_LEFT, c.size.x - 28, sz, col)
 		y += 15.0
 
+# The prompt is the machine's own working directory, asked of the machine.
+# A prompt that guessed would be lying about where the next command lands.
+var _cwd_cache := "/"
+var _cwd_age := 99.0
+
+func _shell_prompt() -> String:
+	if api != null and _cwd_age > 0.5:
+		_cwd_age = 0.0
+		var c := str(api.sh("pwd")).strip_edges()
+		if c != "" and c.begins_with("/"):
+			_cwd_cache = c.get_slice("\n", 0)
+	return "%s$ " % _cwd_cache
+
 func _launch(kind: String) -> void:
 	_ensure()
 	var key := kind
@@ -883,11 +900,24 @@ func _launch(kind: String) -> void:
 		# it somewhere, and prints what comes back. That is the only contract,
 		# and it is why the same control served an emulated Unix in NOMINAL
 		# and serves an API here.
-		t.on_command = func(line: String) -> String: return api.exec(line)
-		t.prompt_fn  = func() -> String: return "runbook$ "
+		# A SHELL ON A REAL MACHINE, not a command box for the game's API.
+		#
+		# The player's workstation is an emulated RV64IM computer with a disk,
+		# an init, a package database and /bin/sh on it, and this is a terminal
+		# onto that machine -- `ls`, `cat`, `grep`, pipes, redirection, for
+		# loops, and shell scripts in files.
+		#
+		# The game is reachable from it through /bin/rb, which is a program on
+		# that disk like any other. That is decision 13 the right way up: the
+		# machine is the thing, and the game is something a program on it can
+		# ask about.
+		t.on_command = func(line: String) -> String: return api.sh(line)
+		t.prompt_fn  = func() -> String: return _shell_prompt()
 		t.banner = PackedStringArray([
-			"RUNBOOK/1 — the same API the forms use.",
-			"Every button on this desktop sends one of these. Type 'help'; Tab completes.",
+			"NomnixOS 11.4 — your workstation.",
+			"",
+			"This is a real machine: ls, cat, grep, pipes, for loops, scripts in files.",
+			"`rb` is the company's API from here — try `rb help`, then `rb ticket.list open`.",
 			"",
 		])
 		t._load_commands()
@@ -899,6 +929,10 @@ func _launch(kind: String) -> void:
 		# frame, found immediately.
 		if t.is_inside_tree():
 			t.grab_focus()
+	elif kind == "Files":
+		var fb := Files.new()
+		fb.setup(api)
+		_win("Files", Rect2(at, Vector2(560, 430)), fb, "files")
 	elif kind.begins_with("appl:"):
 		var id := kind.substr(5)
 		var u := WebUI.new()

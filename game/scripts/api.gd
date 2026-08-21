@@ -41,6 +41,21 @@ func exec(line: String) -> String:
 		out = out.substr(0, out.length() - 2)
 	return out
 
+# ONE COMMAND ON THE PLAYER'S OWN COMPUTER.
+#
+# Goes through exec() like everything else -- there is one door (decision 7)
+# -- and strips the protocol envelope, because a shell's output is the
+# machine's, not the game's. What comes back is exactly what the emulated
+# machine printed, byte for byte, which is the only thing a terminal can
+# honestly show.
+func sh(line: String) -> String:
+	var r := exec("sh " + line)
+	if r.begins_with("+OK\n"):
+		return r.substr(4)
+	if r.begins_with("-ERR "):
+		return r.get_slice("\n", 0).substr(5) + "\n"
+	return r
+
 # The status code off the "+OK 201 400 ms" line, or -1 for a -ERR.
 func status(response: String) -> int:
 	if not response.begins_with("+OK"):

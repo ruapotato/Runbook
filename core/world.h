@@ -18,6 +18,7 @@
 #include "appl.h"
 
 struct Ticket;
+typedef struct Box Box;
 
 /* ---------------------------------------------------------- departments */
 /* Six, because department is what group membership, share paths and the
@@ -132,6 +133,19 @@ struct World {
     int32_t  open_count;
     int32_t  closed_total, breached_total, followups_total;
 
+    /* THE WORKSTATION THE PLAYER IS SITTING AT.
+     *
+     * A whole emulated computer: RV64IM, a disk, an init, a package database
+     * and /bin/sh, lifted from NOMINAL (handoff §14). It is not scenery --
+     * decision 13 puts the player's scripts ON it, and /bin/rb is how a
+     * script there reaches this world.
+     *
+     * It is created lazily, by world_box(), because most things that build a
+     * World do not need one: the balance harness runs thousands of simulated
+     * days and installing a machine for each would be paying for an emulator
+     * to sit idle. */
+    Box     *box;
+
     char     err[RB_ERR_MAX];
 };
 
@@ -169,6 +183,9 @@ Inst  *world_install(World *w, const char *model_id, Prov prov);
  * the same rule the player is expected to follow -- and so the in-game
  * document describing it cannot drift from what the org actually did. */
 void   world_login_for(const World *w, const User *u, char *out, size_t cap);
+
+/* The player's workstation, installed and booted on first use. */
+Box   *world_box(World *w);
 
 /* The fingerprint the determinism gate compares. Covers everything a replay
  * must reproduce and nothing that is merely how we stored it — no pointers,

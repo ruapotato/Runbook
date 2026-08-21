@@ -252,18 +252,31 @@ func _terminal_checks(desk: Node) -> void:
 	ck(nverbs > 5, "and it completes the verbs the API advertises (%d of them)" % nverbs)
 
 	var before: int = t.lines.size()
-	t.feed("world.info\n")
+	t.feed("uname -a\n")
 	var after_line: int = t.lines.size()
-	ck(after_line > before, "typing a verb prints an answer into the screen")
+	ck(after_line > before, "typing a command prints an answer into the screen")
 
-	# `ls` is not a verb here, and the answer has to say what this is rather
-	# than "unknown verb: ls" -- a playtester typed it within seconds.
-	t.feed("ls\n")
+	# `ls` WORKS NOW, and that is the whole of M4 in one assertion.
+	#
+	# This check used to require that `ls` explain itself politely, because
+	# the terminal was an API console and a playtester typed `ls` into it
+	# within seconds of sitting down. The answer to that complaint was not a
+	# better error message. It was a machine.
+	t.feed("ls /\n")
 	var said := ""
 	var n: int = t.lines.size()
+	for i in range(maxi(0, n - 20), n):
+		said += str(t.lines[i]) + " "
+	ck(said.find("bin") >= 0 and said.find("etc") >= 0,
+	   "and `ls /` lists a real filesystem, because this is a real shell")
+
+	# And the game is one program on that machine away.
+	t.feed("rb world.info\n")
+	said = ""
+	n = t.lines.size()
 	for i in range(maxi(0, n - 6), n):
 		said += str(t.lines[i]) + " "
-	ck(said.find("not a shell") >= 0, "and `ls` explains what this console is instead of just refusing")
+	ck(said.find("Harbrook") >= 0, "and `rb` reaches the company's API from the machine")
 
 	# PRIMARY: select, and it is pastable with the middle button. Nothing
 	# touched the clipboard.

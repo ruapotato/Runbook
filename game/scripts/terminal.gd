@@ -98,9 +98,30 @@ const MAX_LINES := 4000
 # second copy is always the one that goes stale.
 var COMMANDS: PackedStringArray = PackedStringArray()
 
+# WHAT IS ACTUALLY ON THE DISK, asked of the machine.
+#
+# NOMINAL hardcoded this list and left a comment saying it must be updated
+# when the guest userland changes -- which is the kind of note that is true
+# right up until it is not. `ls /bin /sbin /usr/bin` is one command and it
+# cannot go stale, and it means completion is proof the program is there.
 func _load_commands() -> void:
 	COMMANDS = PackedStringArray()
-	for line in str(on_command.call("help")).split("\n"):
+	for dir in ["/bin", "/sbin", "/usr/bin", "/usr/sbin"]:
+		for line in str(on_command.call("ls " + dir)).split("\n"):
+			var f := str(line).split(" ", false)
+			# ls prints `-0755  <size>  name`.
+			if f.size() >= 3 and str(f[0]).length() == 5:
+				COMMANDS.append(str(f[2]))
+	COMMANDS.sort()
+
+# AND THE GAME'S VERBS, AFTER `rb`. The one place the terminal knows anything
+# about RUNBOOK: `rb ` is followed by an API verb, and those come from `help`,
+# which --health has already proved every entry of.
+var RB_VERBS: PackedStringArray = PackedStringArray()
+
+func _load_rb_verbs() -> void:
+	RB_VERBS = PackedStringArray()
+	for line in str(on_command.call("rb help")).split("\n"):
 		var l := str(line).strip_edges()
 		if l == "" or l.begins_with("+OK") or l.begins_with("-ERR") or l.begins_with("."):
 			continue
@@ -108,8 +129,8 @@ func _load_commands() -> void:
 			continue
 		var verb := l.get_slice(" ", 0)
 		if verb != "":
-			COMMANDS.append(verb)
-	COMMANDS.sort()
+			RB_VERBS.append(verb)
+	RB_VERBS.sort()
 
 # Words after which the next word is a command again, so `... && ls fo<Tab>`
 # completes a program name and not a file in the current directory.
@@ -535,44 +556,46 @@ func _command_matches(prefix: String) -> PackedStringArray:
 	return out
 
 
-# ASK THE GAME. The terminal has no idea what appliances exist and must not
-# pretend to: it asks, and completes with the answer, so a completion is proof
-# the thing is there.
+# ASK THE MACHINE. The terminal has no idea what is on the disk and must not
+# pretend to: it runs `ls` on the directory being completed and reads the
+# answer, so a completion is proof the file is there. Lifted from NOMINAL,
+# which is where that rule was written.
 #
-# Position is the whole grammar:
-#     api.call <appliance> <endpoint> field=value ...
-#     appl.doc <appliance>
-#     ticket.get <ticket>
+# The one addition: after `rb`, the words being completed are the game's API
+# verbs rather than filenames, because that is what `rb` takes.
 func _path_matches(word: String) -> PackedStringArray:
 	var out := PackedStringArray()
 	var head := cur.substr(0, caret)
 	var words := head.split(" ", false)
-	var verb := "" if words.is_empty() else str(words[0])
-	var arg: int = words.size() - (0 if head.ends_with(" ") else 1)
 
-	if verb.begins_with("appl.") or verb == "api.call" or verb == "form.submit":
-		if arg <= 1:
-			out.append_array(_ids_from("appl.list"))
-		elif arg == 2 and words.size() > 1:
-			var what := "appl.endpoints" if verb == "api.call" else "appl.forms"
-			out.append_array(_ids_from("%s %s" % [what, str(words[1])]))
-	elif verb.begins_with("ticket.") and arg <= 1:
-		out.append_array(_ids_from("ticket.list open 40"))
+	if words.size() > 0 and str(words[0]) == "rb":
+		var argn: int = words.size() - (0 if head.ends_with(" ") else 1)
+		if argn <= 1:
+			if RB_VERBS.is_empty():
+				_load_rb_verbs()
+			for v in RB_VERBS:
+				if str(v).begins_with(word):
+					out.append(str(v))
+			out.sort()
+			return out
 
-	var keep := PackedStringArray()
-	for c in out:
-		if str(c).begins_with(word):
-			keep.append(str(c))
-	keep.sort()
-	return keep
+	var cut := word.rfind("/")
+	var dir := word.substr(0, cut + 1)   # "" when the word has no slash
+	var base := word.substr(cut + 1)
 
-
-func _ids_from(command: String) -> PackedStringArray:
-	var out := PackedStringArray()
-	for line in str(on_command.call(command)).split("\n"):
-		var i := str(line).find("\"id\":\"")
-		if i >= 0:
-			out.append(str(line).substr(i + 6).get_slice("\"", 0))
+	var listing := str(on_command.call("ls " + (dir if dir != "" else ".")))
+	for line in listing.split("\n"):
+		var f := str(line).split(" ", false)
+		# ls prints `d0755  <size>  name`. Anything that does not start with a
+		# type-and-mode field is not an entry -- it is an error, or the path
+		# echoed back because it was not a directory at all.
+		if f.size() < 3 or str(f[0]).length() != 5 or "dl-".find(str(f[0])[0]) < 0:
+			continue
+		var name := str(f[2])
+		if not name.begins_with(base):
+			continue
+		out.append((dir + name + "/") if str(f[0])[0] == "d" else (dir + name))
+	out.sort()
 	return out
 
 

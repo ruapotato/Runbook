@@ -7,6 +7,7 @@
  */
 #include "world.h"
 #include "ticket.h"
+#include "box.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -440,9 +441,23 @@ World *world_new(uint64_t seed, Specs *specs)
     return w;
 }
 
+/* INSTALLED ON FIRST USE, not at world_new().
+ *
+ * Booting a machine costs real milliseconds and a few megabytes, and the
+ * balance harness builds a world per seed and never opens a terminal. Making
+ * the emulator the price of admission for every gate would have been a slow
+ * suite nobody runs -- which is the failure mode this project keeps writing
+ * comments about. Anything that wants a shell asks for one. */
+Box *world_box(World *w)
+{
+    if (!w->box) w->box = box_new(w, w->seed);
+    return w->box;
+}
+
 void world_free(World *w)
 {
     if (!w) return;
+    box_free(w->box);
     rb_free(w->users);
     rb_free(w->tick);
     for (size_t i = 0; i < w->ninst; i++) inst_free(w->inst[i]);
