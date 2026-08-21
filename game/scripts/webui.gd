@@ -101,10 +101,32 @@ func _options_for(f: Dictionary, coll: String, is_key: bool) -> Array:
 				out.append(str(raw))
 			return out
 		if want == "users":
+			# A NAME FIRST, AND ONLY THE PEOPLE WHO STILL NEED ONE.
+			#
+			# "user ref seems like a big list of random names, not really sure
+			# what that means" -- because it was every person in the company,
+			# id first, in creation order. What a user_ref actually means on
+			# a New Account form is "which of the people who work here is this
+			# account for", and the only ones that can be true of are the ones
+			# who do not have an account yet. So: those, by name, with the id
+			# after it because the id is what the API wants and the player
+			# will need to recognise it in a ticket.
+			var have := {}
+			for raw in api.records(api.exec("api.call %s list_accounts" % inst)):
+				var a: Dictionary = raw
+				have[str(a.get("user_ref", ""))] = true
+			var unprovisioned := []
+			var everyone := []
 			for raw in api.objects(api.exec("user.list")):
 				var u: Dictionary = raw
-				out.append("%s  %s %s" % [u.get("id", ""), u.get("given", ""), u.get("family", "")])
-			return out
+				var label := "%s %s  (%s, %s)" % [u.get("given", ""), u.get("family", ""),
+												  u.get("id", ""), u.get("dept", "")]
+				everyone.append(label)
+				if not have.has(str(u.get("id", ""))):
+					unprovisioned.append(label)
+			# If everybody has an account there is nothing waiting, and an
+			# empty list would be worse than a long one.
+			return unprovisioned if not unprovisioned.is_empty() else everyone
 		# One of this appliance's collections: find the list endpoint that
 		# serves it and read the key field off every record.
 		for raw in endpoints:
@@ -138,6 +160,12 @@ func _build() -> void:
 	_clear_edits()
 	result_line = ""
 	rows.clear()
+	# A BROWSE TAB FILLS ITSELF. Clicking "shares" and being shown an empty
+	# box with a Refresh button is the appliance asking the operator to do its
+	# job for it. The API call costs in-game time either way -- the difference
+	# is only whether the player had to ask twice.
+	if tab < 0:
+		_refresh()
 	if tab >= 0 and tab < forms.size():
 		var form: Dictionary = forms[tab]
 		var ep := _endpoint_of(form)
@@ -233,6 +261,24 @@ func _style_picker(ob: OptionButton) -> void:
 	sb.content_margin_left = 6.0
 	for st in ["normal", "hover", "pressed", "focus", "disabled"]:
 		ob.add_theme_stylebox_override(st, sb)
+
+	# THE POPUP TOO. Godot's PopupMenu is dark by default, so a bright
+	# appliance opened a black menu -- "drop down menus are dark godot menus
+	# on the bright UI, looks off". The list is part of the appliance and has
+	# to be the appliance's colours; a vendor whose menus look like somebody
+	# else's is a vendor whose theming has stopped meaning anything (§14).
+	var pop := ob.get_popup()
+	pop.add_theme_color_override("font_color", th["ink"])
+	pop.add_theme_color_override("font_hover_color", Color.WHITE)
+	pop.add_theme_color_override("font_separator_color", th["dim"])
+	var pb := StyleBoxFlat.new()
+	pb.bg_color = th["field"]
+	pb.border_color = th["edge"]
+	pb.set_border_width_all(1)
+	pop.add_theme_stylebox_override("panel", pb)
+	var hb := StyleBoxFlat.new()
+	hb.bg_color = th["accent"]
+	pop.add_theme_stylebox_override("hover", hb)
 
 func _layout() -> void:
 	var pad: float = th.get("pad", 8.0)
@@ -369,7 +415,14 @@ func _submit() -> void:
 				# A user picker shows "u_00041  Alma Barrow"; the API wants the
 				# id. Everything the player needs to read, nothing the API has
 				# to parse.
-				v = v.get_slice("  ", 0)
+				# The label reads "Alma Barrow  (u_00041, sales)"; the API
+				# wants the id. Everything the player needs to read, nothing
+				# the API has to parse.
+				var lp := v.find("(")
+				if lp >= 0:
+					v = v.substr(lp + 1).get_slice(",", 0).strip_edges()
+				else:
+					v = v.get_slice("  ", 0)
 		else:
 			var le: LineEdit = c
 			v = str(le.text)

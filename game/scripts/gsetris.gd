@@ -41,7 +41,7 @@ const GW := BLK * BCOLS          # 80 sand cells across
 const GH := BLK * BROWS          # 120 down
 const NCELL := GW * GH
 const SHIFT := BLK / 2           # sideways step: half a block, for aim
-const TOP := 40.0
+const TOP := 56.0   # two lines of header now: the goal, then the keys
 const LOCK := 0.25               # seconds a landed piece gets before it sets
 const RESETS_MAX := 10
 const FLASH := 0.28              # how long a found bridge glows before it goes
@@ -453,9 +453,18 @@ func _gui_input(e: InputEvent) -> void:
 func _draw() -> void:
 	draw_rect(Rect2(Vector2.ZERO, size), BG)
 	draw_string(mono, Vector2(10, 20), "sandtris", HORIZONTAL_ALIGNMENT_LEFT, -1, 18, INK)
-	draw_string(mono, Vector2(10, 34),
-		"arrows move   Z/X rotate   space drops   join one colour wall to wall   P pauses   R restarts",
-		HORIZONTAL_ALIGNMENT_LEFT, -1, 10, FAINT)
+	# THE GOAL, SAID LOUDLY, because it is not the goal anybody expects.
+	#
+	# "Sandtris has no point as far as I can tell" -- and the rule WAS on
+	# screen, at ten pixels, in the faint colour, at the end of a line of
+	# keybindings that got truncated in a small window. A game whose whole
+	# twist is that rows do not exist has to say what does.
+	draw_string(mono, Vector2(10, 36),
+		"JOIN ONE COLOUR FROM THE LEFT WALL TO THE RIGHT WALL — the whole streak vanishes",
+		HORIZONTAL_ALIGNMENT_LEFT, size.x - 20, 12, INK)
+	draw_string(mono, Vector2(10, 50),
+		"pieces turn to sand when they land   arrows move   Z/X rotate   space drops   P pause   R restart",
+		HORIZONTAL_ALIGNMENT_LEFT, size.x - 20, 10, FAINT)
 
 	var panel: float = clamp(size.x * 0.24, 62.0, 104.0)
 	var availw: float = size.x - panel - 24.0

@@ -138,10 +138,32 @@ func _ready() -> void:
 	if boot_error == "":
 		_launch("Queue")
 
-func _process(_dt: float) -> void:
-	# The clock has to tick without anybody clicking, because the day budget
-	# is the only currency and watching it drain is the point.
-	if top:
+var _clock_cache: Dictionary = {}
+var _clock_age := 99.0
+var _last_minute := -1
+var _clock_flash := 0.0
+
+func _process(dt: float) -> void:
+	# THE CLOCK ONLY MOVES WHEN YOU SPEND TIME, and that is the design (§10):
+	# the day advances at the speed of the fiction, not the wall. But a bar
+	# that never moves while you are reading a ticket looks broken rather than
+	# paused, so when it DOES move it flashes -- which is also the only
+	# feedback the desktop gives that a form cost you two minutes.
+	if api == null or top == null:
+		return
+	_clock_age += dt
+	if _clock_age > 0.25:
+		_clock_age = 0.0
+		var info: Array = api.objects(api.exec("world.info"))
+		if info.size() > 0:
+			_clock_cache = info[0]
+			var m := int(str(_clock_cache.get("minute", "0")))
+			if _last_minute >= 0 and m != _last_minute:
+				_clock_flash = 0.9
+			_last_minute = m
+		top.queue_redraw()
+	if _clock_flash > 0.0:
+		_clock_flash = maxf(0.0, _clock_flash - dt)
 		top.queue_redraw()
 
 func _relayout_desktop() -> void:
@@ -262,9 +284,8 @@ func _draw_top() -> void:
 	# The clock, MATE-style: right-hand end of the top panel. Here it is the
 	# in-game clock, because the day budget is the only currency there is and
 	# a player should never have to go looking for how much of it is left.
-	var info := api.objects(api.exec("world.info"))
-	if info.size() > 0:
-		var i0: Dictionary = info[0]
+	if not _clock_cache.is_empty():
+		var i0: Dictionary = _clock_cache
 		var mins := int(str(i0.get("minute", "0")))
 		var left := int(str(i0.get("minutes_left", "480")))
 		# THE RIGHT-HAND END, MEASURED RATHER THAN GUESSED, and laid out from
@@ -289,8 +310,10 @@ func _draw_top() -> void:
 		var bw := 74.0
 		top.draw_rect(Rect2(x - bw, 7, bw, 11), Color("#c9c5be"))
 		var frac: float = clampf(float(left) / 480.0, 0.0, 1.0)
-		top.draw_rect(Rect2(x - bw, 7, bw * frac, 11),
-			MENU_HOT if left > 60 else Color("#d98a2b"))
+		var barcol: Color = MENU_HOT if left > 60 else Color("#d98a2b")
+		if _clock_flash > 0.0:
+			barcol = barcol.lerp(Color.WHITE, _clock_flash * 0.7)
+		top.draw_rect(Rect2(x - bw, 7, bw * frac, 11), barcol)
 		top.draw_rect(Rect2(x - bw, 7, bw, 11), PANEL_EDGE, false, 1.0)
 		x -= bw + 8.0
 		top.draw_string(mono, Vector2(x - lw, 17), label,
@@ -353,7 +376,9 @@ func _menu_items(which: int) -> Array:
 			return out
 		_:
 			return [{"label": "Go home (end the day)", "kind": "sys:day", "icon": "clock"},
-					{"label": "Help — the API", "kind": "sys:help", "icon": "manual"},
+					{"label": "How the queue works", "kind": "sys:help", "icon": "manual"},
+					{"label": "The API, in full", "kind": "sys:api", "icon": "term"},
+					{"label": "Where the org stands", "kind": "sys:stats", "icon": "sysmon"},
 					{"label": "Quit", "kind": "sys:quit", "icon": "app"}]
 
 func _menu_rect() -> Rect2:
@@ -735,15 +760,96 @@ func _activate(kind: String) -> void:
 					if c.has_method("refresh"):
 						c.refresh()
 		"sys:help":
+			# IT USED TO OPEN A TERMINAL AND TYPE `help`, which answers a
+			# question nobody in Act I is asking. Somebody who has just sat
+			# down wants to know what the job IS.
+			_help_window()
+		"sys:api":
 			_launch("Terminal")
 			var t := _find_window("Terminal")
 			if t != null:
 				var tc: Node = t.get_meta("content")
 				tc.feed("help\n")
+		"sys:stats":
+			_launch("Terminal")
+			var t2 := _find_window("Terminal")
+			if t2 != null:
+				var tc2: Node = t2.get_meta("content")
+				tc2.feed("ticket.stats\n")
 		"sys:quit":
 			get_tree().quit()
 		_:
 			_launch(kind)
+
+# THE ONE PIECE OF PROSE IN THE GAME THAT IS NOT A TICKET.
+#
+# Everything else on this desktop is generated from a spec or read out of the
+# world. This is not: it is the induction talk you would get on your first
+# morning, and it exists because "System > Help did nothing" was a fair
+# complaint about a menu item that opened a terminal and typed `help`.
+#
+# It says what the job is and stops. It does not explain the mechanics of the
+# acceptance checks, because the checks explain themselves in the queue, and
+# it does not hint at Act II, because finding the API is the discovery the
+# whole design is built around.
+const HELP_TEXT := """RUNBOOK
+
+You are the entire IT department of Harbrook Industries.
+
+Forty people work here. More start every week, and each of them arrives as a
+ticket in your queue with nothing set up: no account, no mailbox, no home
+folder, no access.
+
+THE QUEUE
+  Open it from Applications. Click a ticket and press Check, and the game
+  shows you every condition that has to be true before it closes -- and, for
+  the ones that are not true yet, why.
+
+  There is no Resolve button. A ticket closes when the world agrees the work
+  is done, and not before. Nothing you can say to the game will close one.
+
+THE APPLIANCES
+  Places lists the machines this company runs: the directory, the mail
+  server, the file server. Each has forms. Filling one in costs two minutes of
+  your day, and you get 480 minutes.
+
+THE DAY
+  Top right. When it runs out the day ends and tomorrow's arrivals join
+  whatever you did not finish. That is the only punishment there is -- there
+  is no losing this game, only falling further behind.
+
+  System > Go home ends the day early.
+
+WHAT YOU ARE AIMED AT
+  The company doubles, and then doubles again. Doing this by hand stops
+  working long before that. How you deal with it is up to you."""
+
+func _help_window() -> void:
+	var existing := _find_window("Help")
+	if existing != null:
+		existing.visible = true
+		_raise(existing)
+		return
+	var c := Control.new()
+	c.set_meta("text", HELP_TEXT)
+	c.draw.connect(func(): _draw_help(c))
+	cascade = (cascade + 1) % 7
+	_win("Help", Rect2(Vector2(90 + cascade * 20, TOP_H + 30), Vector2(560, 470)), c, "manual")
+
+func _draw_help(c: Control) -> void:
+	c.draw_rect(Rect2(Vector2.ZERO, c.size), Color("#fbfbf7"))
+	var y := 20.0
+	for raw in str(c.get_meta("text")).split("\n"):
+		var line := str(raw)
+		var sz := 12
+		var col := Color("#1b1b1b")
+		if line.length() > 0 and line == line.to_upper() and line.strip_edges() != "":
+			sz = 13
+			col = Color("#3c6eb4")
+		elif line.begins_with("  "):
+			col = Color("#4a5560")
+		c.draw_string(mono, Vector2(14, y), line, HORIZONTAL_ALIGNMENT_LEFT, c.size.x - 28, sz, col)
+		y += 15.0
 
 func _launch(kind: String) -> void:
 	_ensure()

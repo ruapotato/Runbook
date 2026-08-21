@@ -15,6 +15,7 @@ extends Control
 
 const UiFont := preload("res://scripts/uifont.gd")
 const Themes := preload("res://scripts/theme.gd")
+const Clip   := preload("res://scripts/clip.gd")
 
 var api: RunbookApi
 var mono: Font
@@ -53,6 +54,7 @@ func _list_rect() -> Rect2:
 	return Rect2(0, 46, size.x * 0.45, size.y - 46)
 
 func _draw() -> void:
+	painted.clear()
 	draw_rect(Rect2(Vector2.ZERO, size), th["bg"])
 	draw_rect(Rect2(0, 0, size.x, 24), th["panel"])
 	draw_line(Vector2(0, 24), Vector2(size.x, 24), th["edge"], 1.0)
@@ -99,10 +101,10 @@ func _draw() -> void:
 func _draw_detail(t: Dictionary, x: float) -> void:
 	var w := size.x - x - 8.0
 	var y := 62.0
-	draw_string(mono, Vector2(x, y), str(t.get("id", "")), HORIZONTAL_ALIGNMENT_LEFT, w, 13, th["ink"])
+	_paint(str(t.get("id", "")), Vector2(x, y), w, 13, th["ink"])
 	y += 18
-	draw_string(mono, Vector2(x, y), "opened %s, due %s" % [t.get("opened", "?"), t.get("due", "?")],
-		HORIZONTAL_ALIGNMENT_LEFT, w, 11, th["dim"])
+	_paint("opened %s, due %s" % [t.get("opened", "?"), t.get("due", "?")],
+		Vector2(x, y), w, 11, th["dim"])
 	y += 22
 
 	# The prose. It is flavour and onboarding, and it is ALWAYS redundant with
@@ -110,12 +112,11 @@ func _draw_detail(t: Dictionary, x: float) -> void:
 	# know what to do, a script cannot do it either.
 	var desc := str(t.get("description", ""))
 	for line in _wrap(desc, w, 12):
-		draw_string(mono, Vector2(x, y), line, HORIZONTAL_ALIGNMENT_LEFT, w, 12, th["ink"])
+		_paint(str(line), Vector2(x, y), w, 12, th["ink"])
 		y += 15
 	y += 6
 
-	draw_string(mono, Vector2(x, y), "subject: %s" % t.get("ref", "?"),
-		HORIZONTAL_ALIGNMENT_LEFT, w, 11, th["dim"])
+	_paint("subject: %s" % t.get("ref", "?"), Vector2(x, y), w, 11, th["dim"])
 	y += 16
 	for k in t.keys():
 		# What is left after these is the ticket's OWN fields -- rehire,
@@ -126,8 +127,7 @@ func _draw_detail(t: Dictionary, x: float) -> void:
 				 "subject", "kind", "ref", "fields", "description", "acceptance",
 				 "closed_day", "closed_by", "chasing"]:
 			continue
-		draw_string(mono, Vector2(x, y), "%s: %s" % [k, t[k]],
-			HORIZONTAL_ALIGNMENT_LEFT, w, 11, th["accent"])
+		_paint("%s: %s" % [k, t[k]], Vector2(x, y), w, 11, th["accent"])
 		y += 15
 	y += 8
 
@@ -145,13 +145,12 @@ func _draw_detail(t: Dictionary, x: float) -> void:
 		var col: Color = th["ok"] if c["mark"] == "PASS" else (th["dim"] if c["mark"] == "n/a" else th["bad"])
 		var first := true
 		for l in _wrap(str(c["doc"]), w - 30, 11):
-			draw_string(mono, Vector2(x, y), "%-4s %s" % [c["mark"] if first else "", l],
-				HORIZONTAL_ALIGNMENT_LEFT, w, 11, col)
+			_paint("%-4s %s" % [c["mark"] if first else "", l], Vector2(x, y), w, 11, col)
 			first = false
 			y += 13
 		if str(c["why"]) != "":
 			for l in _wrap(str(c["why"]), w - 30, 10):
-				draw_string(mono, Vector2(x + 26, y), l, HORIZONTAL_ALIGNMENT_LEFT, w - 26, 10, th["bad"])
+				_paint(str(l), Vector2(x + 26, y), w - 26, 10, th["bad"])
 				y += 12
 		y += 3
 
@@ -177,7 +176,32 @@ func _buttons() -> Array:
 		{"rect": Rect2(206, 26, 78, 19), "label": "Go home"},
 	]
 
+var dragging_sel := false
+
 func _gui_input(e: InputEvent) -> void:
+	# Selection over the detail panel: press, drag, release, and what you
+	# crossed is in PRIMARY for a middle-click anywhere else.
+	if e is InputEventMouseButton and e.button_index == MOUSE_BUTTON_LEFT \
+	   and e.position.x > _list_rect().size.x:
+		var mb := e as InputEventMouseButton
+		if mb.pressed:
+			sel_a = _line_at(mb.position)
+			sel_b = sel_a
+			dragging_sel = sel_a >= 0
+		else:
+			dragging_sel = false
+			var s := selected_text()
+			if s != "":
+				Clip.set_primary(s)
+		queue_redraw()
+		accept_event()
+		return
+	if e is InputEventMouseMotion and dragging_sel:
+		var at := _line_at((e as InputEventMouseMotion).position)
+		if at >= 0:
+			sel_b = at
+			queue_redraw()
+		return
 	if e is InputEventMouseButton and e.pressed:
 		if e.button_index == MOUSE_BUTTON_WHEEL_DOWN:
 			scroll = mini(scroll + 3, maxi(0, tickets.size() - 4)); queue_redraw(); return
@@ -200,15 +224,56 @@ func _gui_input(e: InputEvent) -> void:
 			if idx >= 0 and idx < tickets.size():
 				selected = idx
 				checks.clear()
+				sel_a = -1
+				sel_b = -1
 				_check()
+				# The ticket number, ready to paste. It is the single most
+				# retyped string in the game.
+				Clip.set_primary(str((tickets[idx] as Dictionary).get("id", "")))
 
 # What the desktop should put in the X11 selection when this window is
 # clicked: the ticket you are looking at. Retyping "TCK-00042" into a terminal
 # is the sort of small friction that adds up over a shift.
+# EVERY LINE THIS WINDOW DRAWS, ADDRESSABLE.
+#
+# "Queue has no way to copy/highlight things for easy copy out of a name" --
+# and the whole detail panel is drawn text, so there was nothing to select.
+# Rather than build a text widget, the window records what it painted and
+# where: click a line and it goes into PRIMARY, ready for a middle-click into
+# the terminal or a form. Drag across several and you get all of them.
+#
+# It costs one array and it means the login, the user id and the ticket
+# number are all one click from being pasted, which is most of what this job
+# is made of.
+var painted: Array = []          # [{rect, text}]
+var sel_a := -1
+var sel_b := -1
+
 func selected_text() -> String:
-	if selected < 0 or selected >= tickets.size():
+	if sel_a < 0:
+		if selected >= 0 and selected < tickets.size():
+			return str((tickets[selected] as Dictionary).get("id", ""))
 		return ""
-	return str((tickets[selected] as Dictionary).get("id", ""))
+	var lo: int = mini(sel_a, sel_b)
+	var hi: int = maxi(sel_a, sel_b)
+	var out := PackedStringArray()
+	for i in range(lo, mini(hi + 1, painted.size())):
+		out.append(str((painted[i] as Dictionary)["text"]))
+	return "\n".join(out)
+
+func _paint(text: String, at: Vector2, w: float, sz: int, col: Color) -> void:
+	painted.append({"rect": Rect2(at.x, at.y - sz, w, sz + 5.0), "text": text})
+	if sel_a >= 0:
+		var i := painted.size() - 1
+		if i >= mini(sel_a, sel_b) and i <= maxi(sel_a, sel_b):
+			draw_rect(painted[i]["rect"], Color(0.30, 0.45, 0.68, 0.30))
+	draw_string(mono, at, text, HORIZONTAL_ALIGNMENT_LEFT, w, sz, col)
+
+func _line_at(p: Vector2) -> int:
+	for i in range(painted.size()):
+		if (painted[i]["rect"] as Rect2).has_point(p):
+			return i
+	return -1
 
 func _check() -> void:
 	if selected < 0 or selected >= tickets.size():

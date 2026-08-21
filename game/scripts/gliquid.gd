@@ -39,8 +39,15 @@ const DPS := 26.0                  # damage per second, per attacker, capped bel
 const HEAL := 7.0                  # regeneration when nothing hostile is near
 const SPEED := 9.0                 # cells / second
 const ACCEL := 9.0
-const SEP_R := 0.85                # cells; below this two fighters shove apart
-const SEP_K := 26.0
+const SEP_R := 1.05                # cells; below this two fighters shove apart
+const SEP_K := 34.0
+# HOW CLOSE IS CLOSE ENOUGH. Every fighter used to drive at the cursor POINT,
+# which meant three hundred of them converged on one cell and stacked into a
+# single overlapping dot -- "it's not a blob, it's just one overlapping dot".
+# Inside this radius the drive falls away and the shove takes over, so the
+# army spreads into a disc around the cursor and behaves like the liquid the
+# game is named after.
+const ARRIVE_R := 3.2
 const ATK_R := 0.9                 # cells; reach of a fighter
 const FAR := 1 << 28               # BFS "unreachable"
 const LIMIT := 180.0               # seconds; whoever is ahead at the bell wins
@@ -73,7 +80,10 @@ const FLOW_EVERY := 3
 #     enemy pressed against it -- two test matches ran a full 150 seconds with
 #     not one fighter changing sides. Counts have no order to be biased by.
 const NEIGH_EVERY := 2
-const NEIGH_CAP := 3               # per bucket, not per fighter -- see below
+const NEIGH_CAP := 6               # per bucket, not per fighter -- see below
+# Six, not three. Three was enough to keep a moving column liquid and nowhere
+# near enough to spread a three-hundred-strong clump that has arrived
+# somewhere and stopped.
 const SEP_R2 := SEP_R * SEP_R
 const ATK_R2 := ATK_R * ATK_R
 
@@ -433,10 +443,17 @@ func _step(dt: float) -> void:
 					bestscore = sc
 					bx2 = ONX[k]
 					by2 = ONY[k]
+			# Near the cursor, ease off. `wl` is the distance to it, so this
+			# is one comparison and it is what turns a point-chase into a
+			# body of fluid finding its own level.
+			if wl < ARRIVE_R:
+				var ease: float = wl / ARRIVE_R
+				bx2 *= ease
+				by2 *= ease
 			if f[row + cx] == 0:
 				# Standing on the cursor: mill about it rather than pile up.
-				bx2 = wx * 0.35
-				by2 = wy * 0.35
+				bx2 = wx * 0.20
+				by2 = wy * 0.20
 			dirx[i] = bx2
 			diry[i] = by2
 
@@ -636,7 +653,11 @@ func _ai_cursor(dt: float) -> void:
 		ai_goal = goal
 
 	var to: Vector2 = ai_goal - cursor[1]
-	var step := 20.0 * dt
+	# ELEVEN, NOT TWENTY. The computer's cursor moved at more than twice its
+	# own army's speed, so it crossed the whole map in three seconds and the
+	# battle was decided at the player's spawn before the player had moved.
+	# A commander can outpace their army a little. Not by double.
+	var step := 11.0 * dt
 	if to.length() <= step:
 		cursor[1] = _clamp_cursor(ai_goal)
 	else:

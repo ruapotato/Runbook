@@ -390,21 +390,58 @@ func _draw() -> void:
 			"R or click to go again")
 
 
+# IT IS A PENGUIN NOW, and a penguin is funnier than a bird for exactly the
+# reason the joke works: the one bird on earth that cannot fly, flapping for
+# its life. It is also the right penguin for a game about running Unix boxes.
+#
+# Drawn from the same primitives as everything else on this desktop -- circles
+# and rectangles, no assets, no texture to import, nothing to lose track of.
+# The shape is: black body, white belly, orange feet and beak, two eyes with
+# the white showing, and flippers that go up on the flap.
+const TUX_BODY  := Color("#15171c")
+const TUX_BELLY := Color("#fdfdfb")
+const TUX_BEAK  := Color("#f2a125")
+const TUX_FOOT  := Color("#e08a1e")
+
+# DRAWN BIGGER THAN IT COLLIDES, and that is a deliberate lie in the player's
+# favour. BIRD_R is the hit radius and it is small on purpose -- 5.5 gap
+# diameters is forgiving but not free. A penguin drawn at that radius is
+# fourteen pixels of black blob with no penguin in it, so the drawing gets
+# half again as much room. Everybody who has ever made a shmup does this: the
+# sprite is generous, the hitbox is honest.
 func _draw_bird(s: float, jitter: float) -> void:
 	var c := _to_px(_bird_x(), bird_y, s, jitter)
-	var r := BIRD_R * s
-	draw_circle(c, r, BIRD)
-	draw_circle(c, r, Color(0.55, 0.40, 0.10, 0.5), false, max(1.0, s))
-	# Wing: up right after a flap, down the rest of the time. Two states is
-	# all the animation a circle needs to look like it is trying.
-	var wy: float = -r * 0.55 if flap_t > 0.0 else r * 0.45
-	draw_rect(Rect2(c.x - r * 0.9, c.y + wy - r * 0.16,
-		r * 0.9, max(1.0, r * 0.34)), Color("#c9962c"))
-	# Beak, and an eye that looks where it is going.
-	draw_rect(Rect2(c.x + r * 0.6, c.y - r * 0.12, r * 0.6, max(1.0, r * 0.3)),
-		Color("#d97b31"))
-	draw_circle(c + Vector2(r * 0.34, -r * 0.32), max(1.0, r * 0.26), Color.WHITE)
-	draw_circle(c + Vector2(r * 0.40, -r * 0.32), max(1.0, r * 0.13), INK)
+	var r := BIRD_R * s * 1.5
+	var up: bool = flap_t > 0.0
+
+	# Feet, kicked back on the flap. Behind the body, so they peek out.
+	var kick: float = -r * 0.20 if up else 0.0
+	for side in [-0.30, 0.16]:
+		draw_rect(Rect2(c.x + r * side, c.y + r * 0.70 + kick,
+			r * 0.40, max(1.0, r * 0.22)), TUX_FOOT)
+
+	# Body: an upright oval, built from two circles and the rectangle between
+	# them. Rounder at the bottom than the top, which is what makes a circle
+	# read as a penguin rather than a ball.
+	draw_circle(c + Vector2(0, -r * 0.20), r * 0.72, TUX_BODY)
+	draw_rect(Rect2(c.x - r * 0.72, c.y - r * 0.20, r * 1.44, r * 0.62), TUX_BODY)
+	draw_circle(c + Vector2(0, r * 0.42), r * 0.72, TUX_BODY)
+
+	# Belly, offset low and forward, the way Tux's is.
+	draw_circle(c + Vector2(r * 0.10, r * 0.26), r * 0.50, TUX_BELLY)
+
+	# Flippers, up on the flap. One is enough at this size -- the far one
+	# would be two pixels of black on black.
+	var wy: float = -r * 0.42 if up else r * 0.12
+	draw_rect(Rect2(c.x - r * 0.92, c.y + wy, r * 0.28, max(1.0, r * 0.52)), TUX_BODY)
+
+	# Beak, pointing where it is going.
+	draw_rect(Rect2(c.x + r * 0.44, c.y - r * 0.30, r * 0.56, max(1.0, r * 0.24)), TUX_BEAK)
+
+	# Eyes. Two, because one eye on a penguin looks like an injury.
+	for ex in [0.10, 0.42]:
+		draw_circle(c + Vector2(r * ex, -r * 0.46), max(1.5, r * 0.19), Color.WHITE)
+		draw_circle(c + Vector2(r * (ex + 0.06), -r * 0.46), max(1.0, r * 0.09), TUX_BODY)
 
 
 func _banner(line1: String, line2: String) -> void:

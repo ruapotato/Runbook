@@ -351,8 +351,21 @@ func _click_path(desk: Node) -> void:
 	# A DISPLAY NAME WITH A SPACE IN IT, because that is what names are. The
 	# protocol refused one until a playtest pointed out that people have two
 	# names; it quotes now, and this is the check that keeps it quoting.
-	var values := {"login": "clicktest", "user_ref": "u_00001",
-				   "display_name": "Click Test", "dept": "engineering"}
+	var values := {"login": "clicktest", "display_name": "Click Test", "dept": "engineering"}
+
+	# WHO THIS ACCOUNT IS FOR is picked from the list, not typed -- and the
+	# list is only the people who do not have one yet, which is what a
+	# user_ref means on a New Account form. The test used to name u_00001,
+	# who has had an account since before the player was hired; it is
+	# correctly no longer offered.
+	for raw in ui.edits:
+		var c0: Control = raw
+		if str(c0.get_meta("field")) == "user_ref" and bool(c0.get_meta("picker", false)):
+			var ob0: OptionButton = c0
+			ck(ob0.item_count > 1, "the user picker offers the people who need an account")
+			if ob0.item_count > 1:
+				ob0.select(1)
+
 	for raw in ui.edits:
 		var c: Control = raw
 		var fname := str(c.get_meta("field"))
@@ -360,8 +373,12 @@ func _click_path(desk: Node) -> void:
 			continue
 		if bool(c.get_meta("picker", false)):
 			var ob: OptionButton = c
+			# A picker's LABEL is for a person -- "Alma Barrow  (u_00041,
+			# sales)" -- and its VALUE is what the API wants. Matching on
+			# "contains" rather than "starts with" is the test learning the
+			# same lesson the player does: the label is not the value.
 			for i in range(ob.item_count):
-				if ob.get_item_text(i).begins_with(str(values[fname])):
+				if ob.get_item_text(i).find(str(values[fname])) >= 0:
 					ob.select(i)
 		else:
 			var le: LineEdit = c

@@ -41,7 +41,12 @@ state:
     key: [name]
     fields:
       - name
-      - { name: kind, type: enum, values: [department, role, access] }
+      # FREE TEXT, NOT AN ENUM. It was a list of three -- department, role,
+      # access -- which is a vendor telling an administrator what kinds of
+      # group their company is allowed to have. Every directory in the world
+      # lets you invent your own, and the ones the org ships with (dept-*) are
+      # a convention rather than a rule. Type whatever you like.
+      - kind
       - { name: dept, type: ref, of: departments }
       - description
 
