@@ -46,14 +46,10 @@ static double now_ms(void)
 #endif
 }
 
-int boxcheck_run(uint64_t seed, const char *specdir)
+int boxcheck_run(uint64_t seed)
 {
     fails = checks = 0;
-    char serr[RB_ERR_MAX];
-    Specs *specs = specs_load(specdir, serr, sizeof serr);
-    if (!specs) { printf("machine: FAIL  specs do not load: %s\n", serr); return 1; }
-
-    World *w = world_new(seed, specs);
+    World *w = world_new(seed);
     double t0 = now_ms();
     Box *b = world_box(w);
     double boot_ms = now_ms() - t0;
@@ -79,84 +75,29 @@ int boxcheck_run(uint64_t seed, const char *specdir)
     sh(b, "cat /root/gate/f", &out);
     ck(has(&out, "hello"), "redirection writes a file and cat reads it back");
 
-    /* ---- THE MOAT (decision 13): a program on the machine reaching the game */
-    sh(b, "rb world.info", &out);
-    ck(has(&out, "Harbrook"), "a program on the machine can reach the game's API");
-    sh(b, "rb ticket.list open 1", &out);
-    ck(has(&out, "TCK-"), "and read the queue");
-
-    /* ---- SCRIPTS IN FILES, which is what "scriptable" has to mean.
-     * NOMINAL's own README said nothing on this machine would run one. That
-     * was fine for a game about repairing one box in an evening; this game is
-     * about making yourself unnecessary, and you cannot automate anything
-     * with a shell that forgets everything when you press return. */
-    sh(b, "echo '# a script' > /root/gate/s", &out);
-    sh(b, "echo 'rb world.info' >> /root/gate/s", &out);
-    sh(b, "echo 'echo done' >> /root/gate/s", &out);
-    sh(b, "/root/gate/s", &out);
-    ck(has(&out, "Harbrook") && has(&out, "done"),
-       "a shell script in a file runs, line by line, and can call the API");
-
-    /* ---- a loop over the queue, which is the first real automation anybody
-     * writes and the thing Act II is entirely about */
-    sh(b, "for t in TCK-00001 TCK-00002; do rb ticket.get $t; done", &out);
-    ck(has(&out, "TCK-00001") && has(&out, "TCK-00002"),
-       "a for loop over tickets works, which is Act II's first script");
-
-    /* ---- THE LANGUAGE (decision 14): a Python subset, on this machine.
+    /* ---- THE MOAT: a program on the machine reaching the ship.
      *
-     * "Scripting language: Python subset (MicroPython-class), not Lua. The
-     * audience knows Python." It is NOMINAL's lexer, compiler and bytecode
-     * VM, compiled for rv64 and living in /bin/py -- so a script here is
-     * lexed, compiled and executed BY A PROGRAM ON THE DISK, on the emulated
-     * CPU, which is what decision 13 asked for and what nothing else in this
-     * genre has. */
-    sh(b, "py -c 'print(6*7)'", &out);
-    ck(has(&out, "42"), "there is a Python subset on the machine, and it computes");
+     * This is the thing that makes the premise work. The computer under the
+     * console is a real RV64IM machine, and /bin/rb on it speaks the same
+     * commands the buttons send -- so a script written here can fly the ship
+     * while the ship is being shot at. */
+    sh(b, "rb ship", &out);
+    ck(has(&out, "hull"), "a program on the machine can see the ship");
+    sh(b, "rb power shields 3", &out);
+    ck(has(&out, "+OK"), "and change it");
 
-    sh(b, "py -c 'x = 0\nfor i in [1,2,3]:\n    x = x + i\nprint(x)'", &out);
-    ck(has(&out, "6") || out.len > 0, "it has loops and lists");
-
-    /* The natives that make it worth having: one to reach the game, one to
-     * read what came back. Everything else a script needs it can write. */
-    sh(b, "py -c 'print(json(api(\"world.info\"))[\"org\"])'", &out);
-    ck(has(&out, "Harbrook"),
-       "and a script can call the API and index the answer as a dict");
-
-    /* ---- DOES THE LANGUAGE ACTUALLY WORK, in full.
-     *
-     * /root/examples/selftest.py is seventy-odd assertions over arithmetic,
-     * comparison, strings, lists, dicts, control flow, functions, recursion
-     * and the natives. It runs here because "the interpreter is broken" is a
-     * thing a player would experience as "I cannot program", and that is the
-     * one conclusion this game must never cause. */
+    /* ---- DOES THE LANGUAGE WORK, in full. */
     sh(b, "py /root/examples/selftest.py", &out);
     ck(has(&out, "selftest: OK"), "the language passes its own suite");
     if (!has(&out, "selftest: OK") && out.p) printf("machine:       %s\n", out.p);
 
-    /* And the shell, for the same reason and with the same weight: pipes,
-     * redirection, variables, substitution, for loops, and $? -- which was
-     * empty inside scripts until this file went looking. */
     sh(b, "/root/examples/selftest.sh", &out);
     ck(has(&out, "selftest.sh: done") && has(&out, "status 0"),
        "and the shell has pipes, loops, redirection and a working $?");
 
-    /* ---- THE EXAMPLES ON THE DISK, which are the on-ramp §15 asks for.
-     * They are not decoration: a player who has to invent automation from a
-     * blank prompt mostly does not, and these are a working script to read,
-     * run and then change. If one of them stops working, the first thing a
-     * player tries stops working. */
-    sh(b, "cat /root/examples/README", &out);
-    ck(out.len > 200 && !has(&out, "cannot read"), "there are example scripts on the disk");
-    sh(b, "/root/examples/queue.sh", &out);
-    ck(has(&out, "the queue"), "the shell example runs");
-    sh(b, "py /root/examples/onboard.py", &out);
-    ck(has(&out, "onboarded"), "and the Python example provisions the whole queue");
-
-    /* ---- and the game agrees it was done, by a script */
-    sh(b, "rb ticket.stats", &out);
-    ck(has(&out, "\"script\":4") || has(&out, "\"closed\":4"),
-       "the world recorded four tickets closed, by a script, from the machine");
+    /* ---- and a script can fly her */
+    sh(b, "py -c 'print(json(ship())[\"hull\"])'", &out);
+    ck(out.len > 0 && !has(&out, "error"), "a script can read the ship as a dict");
 
     /* ---- THE PERFORMANCE QUESTION (§16.1), measured rather than guessed.
      *
@@ -181,24 +122,28 @@ int boxcheck_run(uint64_t seed, const char *specdir)
 
     printf("machine:       %.2f ms per `rb` call typed at a prompt\n", per);
     printf("machine:       %.2f ms per `rb` call inside a script loop\n", per_script);
-    printf("machine:       ~%.0f calls/second scripted, so a 6,000-call Act III day costs ~%.1f s\n",
-           1000.0 / (per_script > 0 ? per_script : 1), 6000.0 * per_script / 1000.0);
+    /* THE NUMBER THAT MATTERS IS PER TICK, not per fight. The game runs at
+     * ten ticks a second and a control loop asks the ship once a tick, so a
+     * script needs to answer in well under a hundred milliseconds or the
+     * fight stutters while somebody's automation thinks. */
+    printf("machine:       ~%.0f calls/second scripted, so a 100-second fight costs ~%.1f s\n",
+           1000.0 / (per_script > 0 ? per_script : 1), 1000.0 * per_script / 1000.0);
 
     /* AND THE SAME QUESTION FOR THE LANGUAGE, which is the one §16 actually
      * asked: the interpreter is a bytecode VM running on an emulated CPU, so
      * every one of its instructions costs several of the machine's. */
     double t3 = now_ms();
-    sh(b, "py -c 'i = 0\nwhile i < 200:\n    api(\"world.hash\")\n    i = i + 1'", &out);
+    sh(b, "py -c 'i = 0\nwhile i < 200:\n    ship()\n    i = i + 1'", &out);
     double per_py = (now_ms() - t3) / 200.0;
     printf("machine:       %.2f ms per API call from a py script (%.0f/second)\n",
            per_py, 1000.0 / (per_py > 0 ? per_py : 1));
-    /* Sixty seconds for a day of Act III automation would make the vacation
-     * test unrunnable; ten is fine, because nobody watches it happen. */
-    ck(per_script < 10.0, "and it is fast enough to script a whole day with");
+    /* Ten milliseconds a call, ten calls a tick, ten ticks a second: at the
+     * limit a script can just keep up with real time. Anything slower and the
+     * player watches their own automation lag the fight. */
+    ck(per_script < 10.0, "and it is fast enough to fly the ship in real time");
 
     buf_free(&out);
     world_free(w);
-    specs_free(specs);
     printf("machine: %d checks, %d failed\n", checks, fails);
     return fails ? 1 : 0;
 }

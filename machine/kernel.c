@@ -894,6 +894,22 @@ static int64_t kernel_syscall(Cpu *c, int64_t n, int64_t a0, int64_t a1,
         char line[NOM_ARG_MAX];
         if (!guest_str(c, (uint64_t)a0, line, sizeof line)) return -1;
         if (!rb_api_hook) return -1;
+        /* A CALL INTO THE SHIP COSTS CPU, and it has to, or the budget means
+         * nothing.
+         *
+         * The host does all the work of a command -- rendering the ship,
+         * parsing the line, changing the world -- and the guest pays about
+         * four instructions to ask for it. So a `while True: ship()` loop ran
+         * three and a half THOUSAND times inside a single tick's budget,
+         * which is not a script running, it is a script with the brakes off:
+         * a player could poll the ship faster than the ship exists.
+         *
+         * Two thousand instructions per call is a syscall that feels like a
+         * syscall. A control loop at one bar of computer gets about fifty a
+         * tick, which is far more than any sane script needs and far less
+         * than a spin loop wants. It is also why a tighter script is worth
+         * more power, which is the whole economy. */
+        c->charge += 2000;
         Buf resp;
         buf_init(&resp);
         rb_api_hook(p->m, line, &resp);

@@ -159,15 +159,12 @@ def early(v):
 check("early-return", early(True), "yes")
 check("no-return-path", early(False), "no")
 
-# --- the API, which is why the language is here ---------------------------
-r = api("world.info")
-check("api-answers", find(r, "Harbrook") > 0, True)
-w = json(r)
-check("json-key", w["org"], "Harbrook Industries")
-check("json-number-as-string", w["day"], "0")
-
-many = lines(api("ticket.list open 3"))
-check("lines-splits", len(many) > 1, True)
+# --- the ship, which is why the language is here --------------------------
+s = json(ship())
+check("ship-answers", has(s, "hull"), True)
+check("ship-has-rooms", find(ship(), "shields") > 0, True)
+check("do-works", find(do("power shields 2"), "+OK"), 0)
+check("do-refuses", find(do("power shields 99"), "-ERR"), 0)
 
 parts = split("a,b,c", ",")
 check("split-count", len(parts), 3)

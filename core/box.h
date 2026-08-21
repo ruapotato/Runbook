@@ -38,6 +38,18 @@ void  box_boot_log(const Box *b, Buf *out);
 
 /* The filesystem, for a file browser that is not a second opinion: both of
  * these go to the machine's own Vfs. */
+/* GIVE THE MACHINE A SLICE OF TIME, which is what a running script spends.
+ *
+ * The ship's computer system is this machine's power supply: its bars decide
+ * how many instructions per tick the daemons on it get. A script left running
+ * during a fight is therefore a real cost, paid in the same reactor bars the
+ * shields want -- and a tighter script is literally worth more power, which
+ * makes optimisation a mechanic rather than a chore. */
+void  box_run_slices(Box *b, int slices);
+/* Start a script in the background, so it keeps running while the fight does.
+ * This is the difference between a command and an automation. */
+bool  box_start(Box *b, const char *path, char *err, size_t errcap);
+
 void  box_list(Box *b, const char *path, Buf *out);
 bool  box_read(Box *b, const char *path, Buf *out);
 bool  box_write(Box *b, const char *path, const char *data, size_t len);

@@ -33,7 +33,6 @@
 #endif
 
 #include "proto.h"
-#include "ticket.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -73,12 +72,11 @@ static void c_to_gdstring(void *dest, const char *s)
 }
 
 /* ------------------------------------------------------------- the object */
-/* One Godot object == one world, with one session onto it. The session
- * carries provenance, and the desktop sets it to `hand`: everything a player
- * does through a form is work done by a person, and the debt mechanic (§11)
- * is built on nothing but that distinction. */
+/* One Godot object == one ship, with one session onto it. The session carries
+ * provenance, and the desktop sets it to `hand`: a bar you dragged and a bar
+ * your script moved are the same command, and the only thing that tells them
+ * apart is which session sent it. */
 typedef struct {
-    Specs  *specs;
     World  *w;
     Session s;
     char    err[RB_ERR_MAX];
@@ -90,11 +88,7 @@ static void client_boot(Client *c, uint64_t seed)
 {
     if (c->w) world_free(c->w);
     c->w = NULL;
-    if (!c->specs) {
-        c->specs = specs_load(NULL, c->err, sizeof c->err);
-        if (!c->specs) return;
-    }
-    c->w = world_new(seed, c->specs);
+    c->w = world_new(seed);
     proto_open(&c->s, c->w);
     /* A person at a keyboard. See the note on the struct. */
     c->s.prov = PROV_HAND;
@@ -117,7 +111,6 @@ static void client_free(void *userdata, GDExtensionClassInstancePtr instance)
     Client *c = (Client *)instance;
     if (!c) return;
     if (c->w) world_free(c->w);
-    if (c->specs) specs_free(c->specs);
     rb_free(c);
 }
 
@@ -125,9 +118,12 @@ static void client_free(void *userdata, GDExtensionClassInstancePtr instance)
 
 /* exec(String line) -> String
  *
- * THE ONLY DOOR. Everything the desktop does -- listing tickets, submitting a
- * form, reading an appliance's manual, advancing the day -- is a line of the
- * same protocol a telnet session speaks. */
+ * THE ONLY DOOR. Every button on the ship -- moving a power bar, sending
+ * somebody to the fire, firing the gun, sealing a door -- is a line of the
+ * same protocol a telnet session speaks, and the same line a script writes.
+ * That is not an implementation convenience, it is the game: there is nothing
+ * the interface can do that you cannot type, because the interface is typing
+ * it. */
 static void m_exec(Client *c, const GDExtensionConstTypePtr *args, void *ret)
 {
     char line[RB_LINE_MAX];
@@ -146,12 +142,13 @@ static void m_boot(Client *c, const GDExtensionConstTypePtr *args, void *ret)
     int64_t seed = *(const int64_t *)args[0];
     client_boot(c, (uint64_t)seed);
     char msg[RB_ERR_MAX + 64];
-    if (c->w) snprintf(msg, sizeof msg, "%s, day %d, %d users", c->w->org, c->w->day, c->w->active);
+    if (c->w) snprintf(msg, sizeof msg, "%s, hull %d, %s closing",
+                       c->w->ship.name, (int)c->w->ship.hull, c->w->ship.enemy.name);
     else      snprintf(msg, sizeof msg, "failed: %s", c->err);
     c_to_gdstring(ret, msg);
 }
 
-/* ready() -> bool — did the specs load and a world come up? A desktop that
+/* ready() -> bool — did a ship come up? A desktop that
  * cannot say this paints a blank screen and blames the player. */
 static void m_ready(Client *c, const GDExtensionConstTypePtr *args, void *ret)
 {

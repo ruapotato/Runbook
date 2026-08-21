@@ -1,14 +1,23 @@
-/* proto.c — command dispatch.
+/* proto.c — the commands, and the reason the console can mirror every click.
  *
- * PROTOCOL NOTE, from the handoff §14 and paid for once already in NOMINAL:
- * this looks like a request/response protocol because that is what it is. It
- * is not HTTP, it does not become HTTP, and the in-game appliance API that
- * arrives at M1 will not be HTTP either — request in, response out, with
- * latency and rate limits as numbers. The lesson of the packet simulation is
- * that fidelity to a real protocol buys nothing and costs everything.
+ * EVERY ACTION IS ONE OF THESE. The UI has no other way to touch the ship, so
+ * when a player clicks "power to shields" the console can honestly print
+ *
+ *     power shields 3
+ *
+ * because that is what the button did. That is the whole teaching mechanism
+ * of this game -- the API is learned during a fight, from watching your own
+ * clicking narrated -- and it only works if there is nothing a button can do
+ * that a line here cannot.
+ *
+ * It is also why the macro recorder can exist at all, and why a script you
+ * write is a first-class way to play rather than a bolted-on convenience.
+ *
+ * Line in, response out. Every response ends with a lone "." so a dumb client
+ * -- telnet, a shell script, a reference agent -- can find the end without
+ * parsing the body.
  */
 #include "proto.h"
-#include "ticket.h"
 #include "box.h"
 #include "recorder.h"
 #include <string.h>
@@ -16,28 +25,11 @@
 #include <stdlib.h>
 #include <stdarg.h>
 
-/* ------------------------------------------------------------ tokenising */
-/* Whitespace-separated words, WITH QUOTING.
- *
- * It had no quoting, on the reasoning that tickets are structured objects and
- * arguments are identifiers (decision 5) -- so the day it needed a quoting
- * rule would be the day something had gone wrong with the data model.
- *
- * The day was the first playtest. A display name is `Alma Barrow`, because
- * display names have spaces in them, and refusing one is not a data model
- * being principled, it is a game telling a player that people are not allowed
- * two names. Identifiers are still identifiers; a VALUE is text.
- *
- * The rule is the one every shell uses and every player already knows:
- *
- *     user.add Alma Barrow sales
- *     api.call directory_01 create_account login=abarrow display_name="Alma Barrow"
- *
- * A quote may open anywhere in a word and runs to the next quote. There are no
- * escapes, because a value containing a quote is not a thing this world has,
- * and inventing an escape rule for it would be inventing the problem. */
 #define MAX_ARGV 10
 
+/* Whitespace-separated words, with quoting, because a value may be a name
+ * with a space in it and refusing one is a game telling a player that people
+ * are not allowed two names. */
 static int split(char *line, char *argv[MAX_ARGV])
 {
     int argc = 0;
@@ -46,8 +38,6 @@ static int split(char *line, char *argv[MAX_ARGV])
         while (*p == ' ' || *p == '\t') p++;
         if (!*p) break;
         argv[argc++] = p;
-        /* Copy in place, dropping the quote characters: the argument ends up
-         * shorter than the span it came from, so it always fits. */
         char *w = p;
         bool q = false;
         while (*p && (q || (*p != ' ' && *p != '\t'))) {
@@ -79,120 +69,49 @@ static void err(Buf *out, const char *fmt, ...)
     buf_printf(out, "-ERR %s\n.\n", tmp);
 }
 
-static int dept_by_name(const char *s)
-{
-    for (int i = 0; i < RB_DEPT__N; i++)
-        if (strcmp(s, rb_dept_name[i]) == 0) return i;
-    return -1;
-}
-
-static void put_user(Buf *out, const User *u)
-{
-    buf_printf(out,
-        "{\"id\":\"%s\",\"given\":\"%s\",\"family\":\"%s\","
-        "\"dept\":\"%s\",\"prov\":\"%s\",\"hired_day\":%d,\"left_day\":%d}\n",
-        u->id, u->given, u->family,
-        rb_dept_name[u->dept], prov_name((Prov)u->prov), u->hired_day, u->left_day);
-}
-
-/* k=v arguments, which is what every appliance call takes. Splitting here
- * rather than in each verb keeps the argument shape identical between
- * api.call and form.submit — the same fields, whether a script sent them or a
- * player typed them into a form. That identity is what makes the macro
- * recorder possible at M4. */
-static int parse_fields(char *argv[MAX_ARGV], int from, int argc, Field *f, int cap, char *err, size_t errcap)
-{
-    int n = 0;
-    for (int i = from; i < argc; i++) {
-        char *eq = strchr(argv[i], '=');
-        if (!eq) { snprintf(err, errcap, "argument %d is not field=value: %s", i - from + 1, argv[i]); return -1; }
-        if (n >= cap) { snprintf(err, errcap, "too many fields"); return -1; }
-        *eq = 0;
-        snprintf(f[n].k, sizeof f[n].k, "%s", argv[i]);
-        snprintf(f[n].v, sizeof f[n].v, "%s", eq + 1);
-        n++;
-    }
-    return n;
-}
-
-/* The response shape for any appliance call. The status code is on the +OK
- * line and the body follows, so a script can branch without parsing the body
- * — and so a script that ignores the status still gets the body, which is
- * how the legacy vendor catches people out. */
-static void put_result(Buf *out, const ApiResult *r)
-{
-    buf_printf(out, "+OK %d %s%d ms\n", r->status, r->committed ? "committed " : "", r->ms);
-    buf_put(out, r->body.p ? r->body.p : "", r->body.len);
-    buf_puts(out, "\n.\n");
-}
-
-/* ---------------------------------------------------------------- session */
 void proto_open(Session *s, World *w)
 {
     s->w = w;
-    /* Writes over the API are attributed to a script by default, because
-     * that is what is on the other end of a socket. The Godot client will set
-     * this to PROV_HAND for work the player does through a form, and that
-     * distinction is the whole of the debt mechanic (handoff §11). */
-    s->prov = PROV_SCRIPT;
     s->open = true;
 }
 
 void proto_hello(Session *s, Buf *out)
 {
+    const Ship *sh = &s->w->ship;
     buf_printf(out,
-        "+OK RUNBOOK/1 %s — day %d, %d users\n"
+        "+OK %s -- a %s is closing.\n"
         "type 'help'; every response ends with a lone '.'\n.\n",
-        s->w->org, s->w->day, s->w->active);
+        sh->name, sh->enemy.name);
 }
 
 static void cmd_help(Buf *out)
 {
-    /* THIS LIST IS A TECHNICAL CLAIM AND THE PROJECT RULE APPLIES TO IT
-     * (handoff §13): every verb named here must exist and behave as
-     * described, checked by running it. --mancheck arrives at M1 and will
-     * execute this text against a live world. Until it does, adding a verb
-     * here that does not work is the exact failure the rule exists to
-     * prevent, so do not. */
+    /* THE PROJECT RULE APPLIES TO THIS LIST (it is the first document in the
+     * game): every verb named here must exist and behave as described, and
+     * the gate checks it by running them. */
     buf_puts(out,
-        "+OK verbs\n"
-        "help                          this\n"
-        "world.info                    org, day, headcount\n"
-        "world.hash                    the state fingerprint the gates compare\n"
-        "world.dump                    the whole world, canonically\n"
-        "day.advance [n]               advance n whole days (default 1)\n"
-        "session.as hand|script|system attribute this session's writes\n"
-        "user.list [active|all]        one user per line\n"
-        "user.get <id|login>           one user\n"
-        "user.add <given> <family> <dept>   returns the id and the derived login\n"
-        "user.offboard <id>            idempotent\n"
-        "depts                         valid department names\n"
+        "+OK what you can do\n"
         "\n"
-        "sh <command>                  a shell on your workstation (try: sh ls /)\n"
+        "  power <system> <bars>   route power. systems: shields engines weapons\n"
+        "                          oxygen medbay computer\n"
+        "  send <crew> <room>      send somebody somewhere. what they do is\n"
+        "                          decided by what is in the room they are in:\n"
+        "                          fight the fire, repair the damage, or man it\n"
+        "  fire [hull|shields]     shoot, when the gun is charged\n"
+        "  door <room> open|shut   a shut door stops fire and holds air\n"
+        "  pause / resume          time stops. thinking is free\n"
         "\n"
-        "rec.start [name]              watch what you do and write it down\n"
-        "rec.stop                      stop watching\n"
-        "rec.script                    what you did, as a Python script\n"
-        "rec.save [path]               and put it on your machine to run\n"
-        "rec.status                    what the recorder has\n"
-        "rec.clear                     throw it away\n"
+        "  ship                    the whole ship, as one object\n"
+        "  rooms                   one line per room\n"
+        "  crew                    one line per person\n"
+        "  log                     what just happened\n"
         "\n"
-        "ticket.list [open|closed|all] [n]   the queue; reading it settles it\n"
-        "ticket.get <id>               one ticket\n"
-        "ticket.check <id>             every acceptance check, and why it fails\n"
-        "ticket.stats                  queue depth, SLA, who closed what\n"
-        "ticket.types                  the types that exist, and what they verify\n"
+        "  sh <command>            a shell on the ship's computer\n"
+        "  run <script>            start a script running IN the fight\n"
         "\n"
-        "models                        every appliance model there is a spec for\n"
-        "appl.list                     appliances installed in this org\n"
-        "appl.info <instance>          one appliance: load, record counts\n"
-        "appl.doc <instance|model>     the manual: every endpoint, every field\n"
-        "appl.install <model>          stand up another one; costs 40 in-game minutes\n"
-        "appl.forms <instance|model>   the web UI, as data\n"
-        "appl.endpoints <instance|model>  every endpoint, machine-readable\n"
-        "appl.fields <instance|model> <collection>  what each field is: text, enum, ref\n"
-        "api.call <instance> <endpoint> [field=value ...]\n"
-        "form.submit <instance> <form> [field=value ...]\n"
+        "  rec.start / rec.stop    watch what you do and write it down\n"
+        "  rec.script / rec.save   what you did, as a Python script\n"
+        "\n"
         "quit\n"
         ".\n");
 }
@@ -207,135 +126,148 @@ bool proto_exec(Session *s, const char *line, Buf *out)
 
     const char *cmd = argv[0];
     World *w = s->w;
+    Ship *sh = &w->ship;
+    char e[RB_ERR_MAX];
 
-    if (!strcmp(cmd, "help"))  { cmd_help(out); return true; }
+    if (!strcmp(cmd, "help")) { cmd_help(out); return true; }
     if (!strcmp(cmd, "quit") || !strcmp(cmd, "exit")) {
         buf_puts(out, "+OK bye\n.\n");
         s->open = false;
         return false;
     }
 
-    if (!strcmp(cmd, "world.info")) {
-        buf_printf(out, "+OK {\"org\":\"%s\",\"seed\":%llu,\"day\":%d,\"minute\":%d,"
-                        "\"minutes_left\":%d,\"day_minutes\":%d,\"users_total\":%zu,"
-                        "\"users_active\":%d,\"appliances\":%zu}\n.\n",
-                   w->org, (unsigned long long)w->seed, w->day, world_minute(w),
-                   RB_DAY_MINUTES - world_minute(w),
-                   RB_DAY_MINUTES, w->nusers, w->active, w->ninst);
+    /* ------------------------------------------------------- the actions */
+    if (!strcmp(cmd, "power")) {
+        if (argc < 3) { err(out, "power <system> <bars>"); return true; }
+        if (!ship_power(sh, argv[1], atoi(argv[2]), e, sizeof e)) { err(out, "%s", e); return true; }
+        recorder_step(w, line);
+        ok(out, "%s at %d, %d spare", argv[1], atoi(argv[2]), ship_power_free(sh));
         return true;
     }
 
-    if (!strcmp(cmd, "world.hash")) {
-        ok(out, "%016llx", (unsigned long long)world_hash(w));
+    if (!strcmp(cmd, "send")) {
+        if (argc < 3) { err(out, "send <crew> <room>"); return true; }
+        int room = atoi(argv[2]);
+        /* A room may be named as well as numbered, because "send Vane
+         * weapons" is what a person says and "send Vane 3" is what a script
+         * ends up writing. Both, and the recorder keeps whichever you used. */
+        for (int i = 0; i < sh->nroom; i++)
+            if (!strcmp(sh->room[i].name, argv[2])) room = i;
+        if (!ship_send(sh, argv[1], room, e, sizeof e)) { err(out, "%s", e); return true; }
+        recorder_step(w, line);
+        ok(out, "%s is in the %s", argv[1], sh->room[room].name);
         return true;
     }
 
-    if (!strcmp(cmd, "world.dump")) {
-        buf_puts(out, "+OK dump\n");
-        world_dump(w, out);
-        buf_puts(out, ".\n");
+    if (!strcmp(cmd, "fire")) {
+        if (!ship_fire(sh, argc > 1 ? argv[1] : "", e, sizeof e)) { err(out, "%s", e); return true; }
+        recorder_step(w, line);
+        ok(out, "fired");
         return true;
     }
 
-    if (!strcmp(cmd, "day.advance")) {
-        int n = (argc > 1) ? atoi(argv[1]) : 1;
-        if (n < 1 || n > 3650) { err(out, "day.advance takes 1..3650"); return true; }
-        /* WHAT THE DAY WAS, which is the only reward this game has to give.
-         *
-         * Going home used to answer "day 4, hired 3, active 47" -- true, and
-         * not a thing anybody feels. A day in this job is one long queue and
-         * then it is over, and if nothing tells you what you got through, the
-         * only number you ever see is how far behind you are.
-         *
-         * So: what you closed, how many were on time, who did the work, and
-         * what tomorrow looks like. The provenance line is the one that
-         * matters over a run -- the day the "script" column overtakes the
-         * "hand" column is the day the game is actually about. */
-        int32_t closed0 = w->closed_total, breach0 = w->breached_total;
-        int32_t raised0 = w->next_tid, users0 = w->active;
-        int hand0 = 0, script0 = 0;
-        for (size_t i = 0; i < w->ntick; i++) {
-            if (w->tick[i].closed_day < 0) continue;
-            if (w->tick[i].closed_prov == PROV_HAND) hand0++;
-            else if (w->tick[i].closed_prov == PROV_SCRIPT || w->tick[i].closed_prov == PROV_SYSTEM) script0++;
+    if (!strcmp(cmd, "door")) {
+        if (argc < 3) { err(out, "door <room> open|shut"); return true; }
+        int room = atoi(argv[1]);
+        for (int i = 0; i < sh->nroom; i++)
+            if (!strcmp(sh->room[i].name, argv[1])) room = i;
+        bool open = !strcmp(argv[2], "open");
+        if (!ship_door(sh, room, open, e, sizeof e)) { err(out, "%s", e); return true; }
+        recorder_step(w, line);
+        ok(out, "%s door %s", sh->room[room].name, open ? "open" : "shut");
+        return true;
+    }
+
+    if (!strcmp(cmd, "pause"))  { ship_pause(sh, true);  ok(out, "paused");  return true; }
+    if (!strcmp(cmd, "resume")) { ship_pause(sh, false); ok(out, "running"); return true; }
+
+    /* THE CLOCK, FOR EVERYTHING THAT IS NOT A PERSON. The desktop ticks from
+     * its own frame loop; a socket session, a gate and a reference agent tick
+     * with this. One implementation of what a second does. */
+    if (!strcmp(cmd, "tick")) {
+        double secs = argc > 1 ? atof(argv[1]) : 0.1;
+        if (secs < 0 || secs > 60) { err(out, "tick takes 0..60 seconds"); return true; }
+        world_tick(w, secs);
+        ok(out, "%ds, hull %d, they are at %d%%",
+           (int)sh->clock, (int)sh->hull, (int)(sh->enemy.hull / sh->enemy.hull_max * 100));
+        return true;
+    }
+
+    /* -------------------------------------------------------- the state */
+    if (!strcmp(cmd, "ship")) {
+        buf_puts(out, "+OK ship\n");
+        ship_render(sh, out);
+        buf_puts(out, "\n.\n");
+        return true;
+    }
+
+    if (!strcmp(cmd, "rooms")) {
+        buf_puts(out, "+OK rooms\n");
+        for (int i = 0; i < sh->nroom; i++) {
+            const Room *r = &sh->room[i];
+            buf_printf(out, "{\"n\":%d,\"name\":\"%s\",\"system\":\"%s\",\"bars\":%d,\"cap\":%d,"
+                            "\"damage\":%d,\"oxygen\":%d,\"fire\":%d,\"breach\":%s,\"door\":\"%s\"}\n",
+                       i, r->name, sys_name(r->sys.kind), r->sys.bars, r->sys.cap,
+                       r->sys.damage, (int)(r->oxygen * 100), (int)(r->fire * 100),
+                       r->breach ? "true" : "false", r->door_open ? "open" : "shut");
         }
-        int hired = 0;
-        for (int i = 0; i < n; i++) hired += world_day_advance(w);
-        int hand1 = 0, script1 = 0;
-        for (size_t i = 0; i < w->ntick; i++) {
-            if (w->tick[i].closed_day < 0) continue;
-            if (w->tick[i].closed_prov == PROV_HAND) hand1++;
-            else if (w->tick[i].closed_prov == PROV_SCRIPT || w->tick[i].closed_prov == PROV_SYSTEM) script1++;
-        }
-        int closed = w->closed_total - closed0;
-        int late = w->breached_total - breach0;
-        buf_printf(out, "+OK day %d\n", w->day);
-        buf_printf(out, "{\"day\":%d,\"closed\":%d,\"on_time\":%d,\"late\":%d,"
-                        "\"by_hand\":%d,\"by_script\":%d,\"arrived\":%d,\"hired\":%d,"
-                        "\"open\":%d,\"users\":%d,\"grew_by\":%d}\n",
-                   w->day, closed, closed - late, late,
-                   hand1 - hand0, script1 - script0,
-                   w->next_tid - raised0, hired, w->open_count, w->active, w->active - users0);
         buf_puts(out, ".\n");
         return true;
     }
 
-    if (!strcmp(cmd, "session.as")) {
-        if (argc < 2) { err(out, "session.as hand|script|system"); return true; }
-        if      (!strcmp(argv[1], "hand"))   s->prov = PROV_HAND;
-        else if (!strcmp(argv[1], "script")) s->prov = PROV_SCRIPT;
-        else if (!strcmp(argv[1], "system")) s->prov = PROV_SYSTEM;
-        else { err(out, "not a provenance: %s", argv[1]); return true; }
-        ok(out, "writes attributed to %s", prov_name(s->prov));
-        return true;
-    }
-
-    if (!strcmp(cmd, "depts")) {
-        buf_puts(out, "+OK depts\n");
-        for (int i = 0; i < RB_DEPT__N; i++) buf_printf(out, "%s\n", rb_dept_name[i]);
+    if (!strcmp(cmd, "crew")) {
+        buf_puts(out, "+OK crew\n");
+        for (int i = 0; i < sh->ncrew; i++)
+            buf_printf(out, "{\"name\":\"%s\",\"room\":%d,\"where\":\"%s\",\"health\":%d,\"alive\":%s}\n",
+                       sh->crew[i].name, sh->crew[i].room, sh->room[sh->crew[i].room].name,
+                       (int)(sh->crew[i].health * 100), sh->crew[i].alive ? "true" : "false");
         buf_puts(out, ".\n");
         return true;
     }
 
-    /* THE WORKSTATION.
-     *
-     * `sh` runs one command line on the player's own computer -- a real
-     * emulated machine with a real disk, running a real /bin/sh compiled for
-     * it. This is not a shell-shaped command interpreter; it is a shell,
-     * loaded off a disk and executed instruction by instruction, and if you
-     * corrupt it it stops working the way a corrupted binary stops working.
-     *
-     * It is here rather than only in the client for the usual reason
-     * (decision 7): the socket, the desktop and the reference agent all reach
-     * the same machine through the same verb. */
+    if (!strcmp(cmd, "log")) {
+        buf_puts(out, "+OK log\n");
+        for (int i = 0; i < sh->nlog; i++) buf_printf(out, "%s\n", sh->log[i]);
+        buf_puts(out, ".\n");
+        return true;
+    }
+
+    /* ------------------------------------------------------- the machine */
     if (!strcmp(cmd, "sh")) {
-        if (argc < 2) {
-            err(out, "sh <command>   -- a shell on your workstation. Try 'sh ls /'");
-            return true;
-        }
-        /* The line, reassembled: the shell wants the whole thing, quoting and
-         * all, and split() has already taken the quotes off. Rebuild from the
-         * original rather than from argv so `sh echo "a b"` reaches the shell
-         * as the player typed it. */
+        if (argc < 2) { err(out, "sh <command>  -- a shell on the ship's computer"); return true; }
         const char *rest = line;
         while (*rest == ' ') rest++;
-        rest += 2;                       /* past "sh" */
+        rest += 2;
         while (*rest == ' ') rest++;
-        Buf sh;
-        buf_init(&sh);
-        box_sh(world_box(w), rest, &sh);
+        Buf shout;
+        buf_init(&shout);
+        box_sh(world_box(w), rest, &shout);
         buf_puts(out, "+OK\n");
-        if (sh.len) buf_put(out, sh.p, sh.len);
-        if (sh.len && sh.p[sh.len - 1] != '\n') buf_putc(out, '\n');
+        if (shout.len) buf_put(out, shout.p, shout.len);
+        if (shout.len && shout.p[shout.len - 1] != '\n') buf_putc(out, '\n');
         buf_puts(out, ".\n");
-        buf_free(&sh);
+        buf_free(&shout);
         return true;
     }
 
-    /* THE RECORDER (decision 15). See recorder.h for what it is for. */
+    /* RUN IT IN THE FIGHT. `sh py script.py` runs it now, to completion, while
+     * everything waits. `run script.py` starts it as a daemon on the ship's
+     * computer, so it keeps going while the raider keeps shooting -- which is
+     * the entire point of writing one. */
+    if (!strcmp(cmd, "run")) {
+        if (argc < 2) { err(out, "run <script>  -- start it running in the fight"); return true; }
+        if (!box_start(world_box(w), argv[1], e, sizeof e)) { err(out, "%s", e); return true; }
+        if (ship_compute_slices(sh) <= 0)
+            ok(out, "%s started -- but the computer has no power, so it will not run", argv[1]);
+        else
+            ok(out, "%s is running", argv[1]);
+        return true;
+    }
+
+    /* ------------------------------------------------------ the recorder */
     if (!strcmp(cmd, "rec.start")) {
         recorder_start(w, argc > 1 ? argv[1] : "recorded");
-        ok(out, "recording. Do the job the way you normally would, then rec.stop");
+        ok(out, "recording. play the way you normally would, then rec.stop");
         return true;
     }
     if (!strcmp(cmd, "rec.stop")) {
@@ -357,14 +289,7 @@ bool proto_exec(Session *s, const char *line, Buf *out)
         buf_puts(out, ".\n");
         return true;
     }
-    if (!strcmp(cmd, "rec.clear")) {
-        recorder_clear(w);
-        ok(out, "cleared");
-        return true;
-    }
-    /* SAVED ONTO THE MACHINE, which is the step that makes it real: the
-     * script stops being something the game showed you and becomes a file on
-     * your own computer, that you can open, run and change. */
+    if (!strcmp(cmd, "rec.clear")) { recorder_clear(w); ok(out, "cleared"); return true; }
     if (!strcmp(cmd, "rec.save")) {
         char path[RB_VAL_MAX];
         if (argc > 1) snprintf(path, sizeof path, "%s", argv[1]);
@@ -373,432 +298,25 @@ bool proto_exec(Session *s, const char *line, Buf *out)
         buf_init(&script);
         recorder_script(w, &script);
         Box *b = world_box(w);
-        /* mkdir -p, through the machine's own shell, so the directory is made
-         * the way a directory on that machine is made. */
         Buf ignore;
         buf_init(&ignore);
         box_sh(b, "mkdir /root/scripts", &ignore);
         buf_free(&ignore);
         bool wrote = box_write(b, path, script.p ? script.p : "", script.len);
-        if (wrote) ok(out, "wrote %s (%zu bytes) -- run it with: sh py %s", path, script.len, path);
+        if (wrote) ok(out, "wrote %s -- start it with: run %s", path, path);
         else       err(out, "could not write %s", path);
         buf_free(&script);
         return true;
     }
 
-    /* ---------------------------------------------------------- tickets */
-    /* READING THE QUEUE SETTLES IT FIRST, and costs nothing.
-     *
-     * Handoff decision 9: tickets close by state verification, never by
-     * player assertion. There is deliberately no "resolve" verb here, and
-     * adding one would end the game. What there is instead is this: whenever
-     * anyone looks at the queue, the game re-checks every open ticket against
-     * the world, and the ones whose work is done are already closed by the
-     * time the player sees the list.
-     *
-     * Verification is free because it is the oracle, not a resource. Charging
-     * for it would teach players not to check their work, which is precisely
-     * backwards. */
-    if (!strcmp(cmd, "ticket.list")) {
-        world_ticket_sweep(w);
-        bool closed = argc > 1 && !strcmp(argv[1], "closed");
-        bool all    = argc > 1 && !strcmp(argv[1], "all");
-        int limit = 0;
-        for (int i = 1; i < argc; i++) if (argv[i][0] >= '0' && argv[i][0] <= '9') limit = atoi(argv[i]);
-        buf_puts(out, "+OK tickets\n");
-        int shown = 0;
-        for (size_t i = 0; i < w->ntick; i++) {
-            bool is_open = w->tick[i].closed_day < 0;
-            if (!all && (is_open == closed)) continue;
-            if (limit && shown >= limit) break;
-            ticket_render(w, &w->tick[i], out);
-            buf_putc(out, '\n');
-            shown++;
+    /* IT IS NOT A SHELL, and saying so is better than "unknown". */
+    static const char *const SHELLISH[] = { "ls", "cd", "cat", "pwd", "echo", "ps", "grep" };
+    for (size_t i = 0; i < sizeof SHELLISH / sizeof SHELLISH[0]; i++)
+        if (!strcmp(cmd, SHELLISH[i])) {
+            err(out, "'%s' is a program on the ship's computer -- try: sh %s", cmd, line);
+            return true;
         }
-        buf_puts(out, ".\n");
-        return true;
-    }
 
-    if (!strcmp(cmd, "ticket.get")) {
-        if (argc < 2) { err(out, "ticket.get <id>"); return true; }
-        Ticket *t = world_ticket_find(w, argv[1]);
-        /* This one ticket, not the whole queue. Reading one ticket used to
-         * settle all of them, which at Act III volumes meant every glance at
-         * a ticket re-evaluated three hundred others. */
-        if (t) ticket_settle(w, t);
-        if (!t) { err(out, "no such ticket: %s", argv[1]); return true; }
-        buf_puts(out, "+OK ticket\n");
-        ticket_render(w, t, out);
-        buf_puts(out, "\n.\n");
-        return true;
-    }
-
-    /* WHY IT WILL NOT CLOSE. Every check, its documentation, and for the ones
-     * that fail, the reason. A ticket that refuses to close and will not say
-     * why is the single most frustrating thing this game could do, and the
-     * temptation to hide the reason -- to make the player "work it out" -- is
-     * the diagnosis-as-content trap that killed every earlier attempt in this
-     * lineage (handoff §2). The difficulty is the volume. It is never this. */
-    if (!strcmp(cmd, "ticket.check")) {
-        if (argc < 2) { err(out, "ticket.check <id>"); return true; }
-        Ticket *t = world_ticket_find(w, argv[1]);
-        if (!t) { err(out, "no such ticket: %s", argv[1]); return true; }
-        Verdict v;
-        ticket_evaluate(w, t, &v);
-        if (v.all) ticket_settle(w, t);
-        buf_printf(out, "+OK %s %s\n", t->id, v.all ? "passes" : "does not pass yet");
-        for (int i = 0; i < v.n; i++) {
-            /* n/a, never PASS. A check that did not apply has proved nothing,
-             * and showing it as a pass would teach the player to read a green
-             * column that is partly decoration. */
-            const char *mark = v.skipped[i] ? " n/a" : (v.passed[i] ? "PASS" : "    ");
-            buf_printf(out, "%s %-28s %s%s%s\n", mark,
-                       t->type->check[i].id, t->type->check[i].doc,
-                       (v.passed[i] && !v.skipped[i]) ? "" : "  -- ",
-                       (v.passed[i] && !v.skipped[i]) ? "" : v.why[i]);
-        }
-        buf_puts(out, ".\n");
-        return true;
-    }
-
-    if (!strcmp(cmd, "ticket.stats")) {
-        world_ticket_sweep(w);
-        buf_puts(out, "+OK stats\n");
-        world_ticket_stats(w, out);
-        buf_puts(out, "\n.\n");
-        return true;
-    }
-
-    if (!strcmp(cmd, "ticket.types")) {
-        buf_puts(out, "+OK ticket types\n");
-        for (size_t i = 0; i < w->specs->nticket; i++) {
-            const TicketType *tt = &w->specs->ticket[i];
-            buf_printf(out, "{\"id\":\"%s\",\"subject\":\"%s\",\"sla_minutes\":%d,\"doc\":\"%s\","
-                            "\"acceptance\":[", tt->id, tt->subject_kind, tt->sla_minutes, tt->doc);
-            for (int c = 0; c < tt->ncheck; c++)
-                buf_printf(out, "%s{\"id\":\"%s\",\"doc\":\"%s\"}", c ? "," : "",
-                           tt->check[c].id, tt->check[c].doc);
-            buf_puts(out, "]}\n");
-        }
-        buf_puts(out, ".\n");
-        return true;
-    }
-
-    /* ------------------------------------------------------- appliances */
-    if (!strcmp(cmd, "appl.list")) {
-        buf_puts(out, "+OK appliances\n");
-        for (size_t i = 0; i < w->ninst; i++) { inst_render(w->inst[i], out); buf_putc(out, '\n'); }
-        buf_puts(out, ".\n");
-        return true;
-    }
-
-    if (!strcmp(cmd, "appl.info")) {
-        if (argc < 2) { err(out, "appl.info <instance>"); return true; }
-        Inst *in = world_inst(w, argv[1]);
-        if (!in) { err(out, "no such appliance: %s", argv[1]); return true; }
-        buf_puts(out, "+OK appliance\n");
-        inst_render(in, out);
-        buf_puts(out, "\n.\n");
-        return true;
-    }
-
-    /* THE MANUAL. Generated from the same spec that drives the endpoints, so
-     * it cannot document something that does not exist (handoff §13). This is
-     * what --mancheck executes. */
-    if (!strcmp(cmd, "appl.doc")) {
-        if (argc < 2) { err(out, "appl.doc <instance|model>"); return true; }
-        Inst *in = world_inst(w, argv[1]);
-        const Model *m = in ? in->m : spec_model(w->specs, argv[1]);
-        if (!m) { err(out, "no such appliance or model: %s", argv[1]); return true; }
-        const Vendor *v = spec_vendor(w->specs, m->vendor);
-        buf_printf(out, "+OK %s\n", m->model);
-        buf_printf(out, "%s\n", m->doc);
-        buf_printf(out, "vendor: %s (%s) — %s\n", v->name, arch_name(v->arch), v->doc);
-        buf_printf(out, "interfaces: %s%s%s\n",
-                   m->has_web ? "web" : "", (m->has_web && m->has_api) ? ", " : "",
-                   m->has_api ? "api" : "");
-        buf_printf(out, "capacity: %d at nominal; rate limit %d calls/minute\n",
-                   m->capacity, v->rate_limit);
-        for (int i = 0; i < m->ncoll; i++) {
-            const CollSpec *cs = &m->coll[i];
-            buf_printf(out, "collection %s: keyed by", cs->name);
-            for (int k = 0; k < cs->nkey; k++) buf_printf(out, " %s", cs->key[k]);
-            buf_printf(out, "%s; fields:", cs->reuse_key ? "" : " (keys are never reused)");
-            for (int f = 0; f < cs->nfield; f++) buf_printf(out, " %s", cs->field[f]);
-            buf_putc(out, '\n');
-        }
-        for (int i = 0; i < m->nep; i++) {
-            const Endpoint *e = &m->ep[i];
-            buf_printf(out, "\nendpoint %s (%s %s, %d ms)\n", e->id, op_name(e->op), e->coll, e->latency_ms);
-            if (e->doc[0]) buf_printf(out, "  %s\n", e->doc);
-            if (e->nfield) {
-                buf_puts(out, "  fields:");
-                for (int f = 0; f < e->nfield; f++) buf_printf(out, " %s", e->field[f]);
-                buf_putc(out, '\n');
-            }
-            if (e->nrequired) {
-                buf_puts(out, "  required:");
-                for (int f = 0; f < e->nrequired; f++) buf_printf(out, " %s", e->required[f]);
-                buf_putc(out, '\n');
-            }
-            if (e->nidem) {
-                buf_puts(out, "  idempotent on:");
-                for (int f = 0; f < e->nidem; f++) buf_printf(out, " %s", e->idem[f]);
-                buf_putc(out, '\n');
-            }
-            for (int f = 0; f < e->nref; f++)
-                buf_printf(out, "  %s must already exist in %s\n", e->reffield[f], e->refcoll[f]);
-            if (e->failure_modes) {
-                buf_puts(out, "  can fail with:");
-                if (e->failure_modes & FM_RATE_LIMITED)         buf_puts(out, " rate_limited");
-                if (e->failure_modes & FM_TRANSIENT)            buf_puts(out, " transient");
-                if (e->failure_modes & FM_TIMEOUT_AFTER_COMMIT) buf_puts(out, " timeout_after_commit");
-                if (e->failure_modes & FM_STALL)                buf_puts(out, " stall");
-                buf_putc(out, '\n');
-            }
-            for (int x = 0; x < e->nexample; x++) buf_printf(out, "  example: %s\n", e->example[x]);
-        }
-        buf_puts(out, ".\n");
-        return true;
-    }
-
-    /* THE ENDPOINTS, AS DATA, which is a different document from the manual.
-     *
-     * appl.doc is for a person: prose, examples, the failure modes spelled
-     * out. This is for a program -- one line per endpoint, every field named,
-     * machine-readable. Both are generated from the one spec, so they cannot
-     * disagree.
-     *
-     * It exists because the client needs it to render an appliance's browse
-     * views, and the moment it existed for the client it existed for the
-     * player's scripts too. That is the shape decision 7 keeps producing:
-     * anything the UI needs, everybody gets. */
-    if (!strcmp(cmd, "appl.endpoints")) {
-        if (argc < 2) { err(out, "appl.endpoints <instance|model>"); return true; }
-        Inst *in = world_inst(w, argv[1]);
-        const Model *m = in ? in->m : spec_model(w->specs, argv[1]);
-        if (!m) { err(out, "no such appliance or model: %s", argv[1]); return true; }
-        buf_puts(out, "+OK endpoints\n");
-        for (int i = 0; i < m->nep; i++) {
-            const Endpoint *e = &m->ep[i];
-            buf_printf(out, "{\"id\":\"%s\",\"op\":\"%s\",\"collection\":\"%s\",\"latency_ms\":%d,"
-                            "\"filter\":\"%s\",\"doc\":\"%s\",\"fields\":[",
-                       e->id, op_name(e->op), e->coll, e->latency_ms, e->filter, e->doc);
-            for (int f = 0; f < e->nfield; f++) buf_printf(out, "%s\"%s\"", f ? "," : "", e->field[f]);
-            buf_puts(out, "],\"required\":[");
-            for (int f = 0; f < e->nrequired; f++) buf_printf(out, "%s\"%s\"", f ? "," : "", e->required[f]);
-            buf_puts(out, "]}\n");
-        }
-        buf_puts(out, ".\n");
-        return true;
-    }
-
-    /* WHAT A FIELD IS, so a form can offer a list instead of a blank box.
-     *
-     * Separate from appl.forms rather than nested inside it, because the
-     * response format is one flat object per line and a form's field list
-     * would have to become an array of objects to carry this -- which every
-     * reader, including the player's, would then have to learn to unpick. One
-     * more verb is cheaper than one more shape. */
-    if (!strcmp(cmd, "appl.fields")) {
-        if (argc < 3) { err(out, "appl.fields <instance|model> <collection>"); return true; }
-        Inst *in = world_inst(w, argv[1]);
-        const Model *m = in ? in->m : spec_model(w->specs, argv[1]);
-        if (!m) { err(out, "no such appliance or model: %s", argv[1]); return true; }
-        const CollSpec *cs = model_coll(m, argv[2]);
-        if (!cs) { err(out, "%s has no collection called %s", m->id, argv[2]); return true; }
-        buf_puts(out, "+OK fields\n");
-        for (int i = 0; i < cs->nfield; i++) {
-            const FieldSpec *f = &cs->fs[i];
-            buf_printf(out, "{\"name\":\"%s\",\"type\":\"%s\",\"of\":\"%s\",\"values\":[",
-                       f->name, field_type_name(f->type), f->of);
-            for (int v = 0; v < f->nvalue; v++) buf_printf(out, "%s\"%s\"", v ? "," : "", f->value[v]);
-            buf_puts(out, "]}\n");
-        }
-        buf_puts(out, ".\n");
-        return true;
-    }
-
-    /* The web UI, as data. No client renders it until M3; it is served now so
-     * that when one does, it renders THIS rather than growing its own idea of
-     * what the appliance can do (handoff decision 6). */
-    if (!strcmp(cmd, "appl.forms")) {
-        if (argc < 2) { err(out, "appl.forms <instance|model>"); return true; }
-        Inst *in = world_inst(w, argv[1]);
-        const Model *m = in ? in->m : spec_model(w->specs, argv[1]);
-        if (!m) { err(out, "no such appliance or model: %s", argv[1]); return true; }
-        buf_puts(out, "+OK forms\n");
-        for (int i = 0; i < m->nform; i++) {
-            const Form *f = &m->form[i];
-            buf_printf(out, "{\"id\":\"%s\",\"title\":\"%s\",\"calls\":\"%s\",\"theme\":\"%s\",\"fields\":[",
-                       f->id, f->title, f->calls, m->theme);
-            for (int k = 0; k < f->nfield; k++) buf_printf(out, "%s\"%s\"", k ? "," : "", f->field[k]);
-            buf_puts(out, "]}\n");
-        }
-        buf_puts(out, ".\n");
-        return true;
-    }
-
-    if (!strcmp(cmd, "models")) {
-        buf_puts(out, "+OK models\n");
-        for (size_t i = 0; i < w->specs->nmodel; i++) {
-            const Model *m = &w->specs->model[i];
-            const Vendor *v = spec_vendor(w->specs, m->vendor);
-            buf_printf(out, "{\"id\":\"%s\",\"model\":\"%s\",\"vendor\":\"%s\",\"arch\":\"%s\","
-                            "\"kind\":\"%s\",\"api\":%s,\"cost\":%d}\n",
-                       m->id, m->model, v->name, arch_name(v->arch), m->kind,
-                       m->has_api ? "true" : "false", v->cost);
-        }
-        buf_puts(out, ".\n");
-        return true;
-    }
-
-    /* BUYING ANOTHER ONE. The Act III verb.
-     *
-     * It costs forty in-game minutes whoever calls it, script or not, because
-     * what takes the time is racking and configuring the thing rather than
-     * typing the command. At Act I volumes that is an afternoon and fine; at
-     * four thousand users the arithmetic stops working and it has to happen
-     * while you are asleep. */
-    if (!strcmp(cmd, "appl.install")) {
-        if (argc < 2) { err(out, "appl.install <model>  (see 'models')"); return true; }
-        Inst *in = world_install(w, argv[1], s->prov);
-        if (!in) { err(out, "%s", w->err); return true; }
-        world_spend_ms(w, RB_INSTALL_MINUTES * 60000);
-        buf_printf(out, "+OK installed, %d minutes\n", RB_INSTALL_MINUTES);
-        inst_render(in, out);
-        buf_puts(out, "\n.\n");
-        return true;
-    }
-
-    /* --------------------------------------------------------- the calls */
-    if (!strcmp(cmd, "api.call")) {
-        if (argc < 3) { err(out, "api.call <instance> <endpoint> [field=value ...]"); return true; }
-        Inst *in = world_inst(w, argv[1]);
-        if (!in) { err(out, "no such appliance: %s", argv[1]); return true; }
-        Field f[SPEC_MAX_FIELDS];
-        char perr[128];
-        int nf = parse_fields(argv, 3, argc, f, SPEC_MAX_FIELDS, perr, sizeof perr);
-        if (nf < 0) { err(out, "%s", perr); return true; }
-        ApiResult r;
-        appl_call(w, in, argv[2], f, nf, s->prov, &r);
-        /* RECORDED, IF ANYONE IS WATCHING. Only what worked: a script made of
-         * the player's mistakes would be a cruel joke, and the retry they did
-         * by hand is not a step, it is the same step. */
-        if (r.status < 400) recorder_step(w, in->id, argv[2], f, nf, false);
-        put_result(out, &r);
-        buf_free(&r.body);
-        return true;
-    }
-
-    /* THE OTHER WAY IN, AND THE ONE ACT I IS PLAYED WITH.
-     *
-     * A form submission is the same call with three differences: it works on
-     * appliances that have no API, it is attributed to a hand, and it costs
-     * whole minutes of the day instead of milliseconds. That last one is the
-     * Act I → Act II pressure expressed as a number (§10): two minutes is
-     * nothing at five tickets a day and is the entire day at forty. */
-    if (!strcmp(cmd, "form.submit")) {
-        if (argc < 3) { err(out, "form.submit <instance> <form> [field=value ...]"); return true; }
-        Inst *in = world_inst(w, argv[1]);
-        if (!in) { err(out, "no such appliance: %s", argv[1]); return true; }
-        const Form *form = NULL;
-        for (int i = 0; i < in->m->nform; i++) if (!strcmp(in->m->form[i].id, argv[2])) form = &in->m->form[i];
-        if (!form) { err(out, "no such form on %s: %s", in->id, argv[2]); return true; }
-        Field f[SPEC_MAX_FIELDS];
-        char perr[128];
-        int nf = parse_fields(argv, 3, argc, f, SPEC_MAX_FIELDS, perr, sizeof perr);
-        if (nf < 0) { err(out, "%s", perr); return true; }
-        for (int i = 0; i < nf; i++) {
-            bool offered = false;
-            for (int k = 0; k < form->nfield; k++) if (!strcmp(f[i].k, form->field[k])) offered = true;
-            if (!offered) { err(out, "the %s form has no %s field", form->id, f[i].k); return true; }
-        }
-        ApiResult r;
-        /* A form is operated by a person, whatever session asked for it. */
-        appl_call(w, in, form->calls, f, nf, PROV_HAND, &r);
-        /* AND RECORDED AS THE API CALL IT WAS. Not as `form.submit` -- as the
-         * endpoint underneath, because that is what the button actually did
-         * and the entire point of the recorder is showing the player that. */
-        if (r.status < 400) recorder_step(w, in->id, form->calls, f, nf, true);
-        /* The API latency already came out of the day; a human filling in a
-         * form costs the rest of the two minutes. */
-        int human = RB_FORM_MINUTES * 60000 - r.ms;
-        if (human > 0) { world_spend_ms(w, human); r.ms += human; }
-        put_result(out, &r);
-        buf_free(&r.body);
-        return true;
-    }
-
-    if (!strcmp(cmd, "user.list")) {
-        bool all = (argc > 1 && !strcmp(argv[1], "all"));
-        int n = 0;
-        buf_puts(out, "+OK users\n");
-        for (size_t i = 0; i < w->nusers; i++) {
-            if (!all && w->users[i].left_day >= 0) continue;
-            put_user(out, &w->users[i]);
-            n++;
-        }
-        buf_printf(out, ".\n");
-        (void)n;
-        return true;
-    }
-
-    if (!strcmp(cmd, "user.get")) {
-        if (argc < 2) { err(out, "user.get <id>"); return true; }
-        User *u = world_user_find(w, argv[1]);
-        if (!u) { err(out, "no such user: %s", argv[1]); return true; }
-        buf_puts(out, "+OK user\n");
-        put_user(out, u);
-        buf_puts(out, ".\n");
-        return true;
-    }
-
-    if (!strcmp(cmd, "user.add")) {
-        if (argc < 4) { err(out, "user.add <given> <family> <dept>"); return true; }
-        int d = dept_by_name(argv[3]);
-        if (d < 0) { err(out, "no such department: %s (try 'depts')", argv[3]); return true; }
-        User *u = world_user_add(w, s->prov, argv[1], argv[2], (uint8_t)d);
-        if (!u) { err(out, "%s", w->err); return true; }
-        /* A person, and nothing else. No account, no mailbox, no group. What
-         * comes back is an id and the login the org's convention WOULD give
-         * them — a suggestion, not a reservation. The directory may already
-         * have it, and finding that out is the player's job (handoff §8.1). */
-        char suggest[RB_NAME_MAX];
-        world_login_for(w, u, suggest, sizeof suggest);
-        ok(out, "{\"id\":\"%s\",\"convention_login\":\"%s\"}", u->id, suggest);
-        return true;
-    }
-
-    if (!strcmp(cmd, "user.offboard")) {
-        if (argc < 2) { err(out, "user.offboard <id>"); return true; }
-        if (!world_user_offboard(w, argv[1])) { err(out, "%s", w->err); return true; }
-        ok(out, "offboarded %s", argv[1]);
-        return true;
-    }
-
-    /* IT IS NOT A SHELL, AND SAYING SO IS BETTER THAN "unknown verb".
-     *
-     * A terminal on a desktop is a shell, and the first thing anybody types
-     * into one is `ls`. Answering "unknown verb: ls" tells them the terminal
-     * is broken. Answering what this console actually is tells them what to
-     * type next -- and admits, plainly, that the machine with a real shell on
-     * it is a milestone away rather than pretending the question was silly. */
-    static const char *const SHELLISH[] = {
-        "ls", "cd", "pwd", "cat", "echo", "grep", "ps", "top", "man", "df",
-        "mkdir", "rm", "cp", "mv", "vi", "vim", "nano", "less", "more",
-        "whoami", "uname", "clear", "exit", "sudo", "su", "chmod", "find"
-    };
-    for (size_t i = 0; i < sizeof SHELLISH / sizeof SHELLISH[0]; i++) {
-        if (strcmp(cmd, SHELLISH[i])) continue;
-        buf_printf(out,
-            "-ERR this is the RUNBOOK API console, not a shell -- there is no '%s' here.\n"
-            "The verbs are the game's API; type 'help' for all of them. Tab completes.\n"
-            "A real machine with a real shell on it is what the scripting milestone is for;\n"
-            "until then, everything the desktop's forms do, you can do here.\n.\n", cmd);
-        return true;
-    }
-
-    err(out, "unknown verb: %s (try 'help')", cmd);
+    err(out, "no such command: %s (try 'help')", cmd);
     return true;
 }

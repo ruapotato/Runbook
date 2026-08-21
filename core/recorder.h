@@ -30,17 +30,21 @@
 #ifndef RB_RECORDER_H
 #define RB_RECORDER_H
 
-#include "appl.h"
-#include "spec.h"
+#include "rb.h"
 
 #define REC_MAX_STEPS 512
 
+#define REC_MAX_WORDS 8
+
+/* ONE COMMAND, AS TYPED (or as clicked, which is the same thing here).
+ *
+ * The commands are positional -- `power shields 3`, `send Vane weapons` --
+ * which is what a person says out loud, so the recorder keeps them that way
+ * and looks for repetition word by word. */
 typedef struct {
-    char  target[RB_ID_MAX];             /* the appliance                    */
-    char  action[RB_NAME_MAX];           /* the endpoint                     */
-    Field arg[SPEC_MAX_FIELDS];
-    int   nargs;
-    bool  by_hand;                       /* a form, rather than a typed call */
+    char word[REC_MAX_WORDS][RB_VAL_MAX];
+    int  nwords;
+    double at;                           /* seconds into the fight */
 } RecStep;
 
 typedef struct {
@@ -60,8 +64,7 @@ void recorder_stop(World *w);
  * decide something is a script the player will write themselves, and putting
  * every glance they took into the transcript would bury the six lines that
  * matter. */
-void recorder_step(World *w, const char *target, const char *action,
-                   const Field *args, int nargs, bool by_hand);
+void recorder_step(World *w, const char *line);
 void recorder_clear(World *w);
 /* The script. Python, because that is what decision 14 chose and what the
  * recorder is an on-ramp TO. */

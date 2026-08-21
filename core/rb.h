@@ -25,6 +25,9 @@
 #define RB_ID_MAX     32
 #define RB_NAME_MAX   48
 #define RB_LINE_MAX   8192
+/* One value: a room name, a crew name, a number as typed. Wide enough that
+ * nothing the commands carry truncates. */
+#define RB_VAL_MAX    96
 #define RB_ERR_MAX    256
 
 /* --------------------------------------------------------------- buffers */

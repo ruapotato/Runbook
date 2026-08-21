@@ -11,6 +11,7 @@
 #include "kernel.h"
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 struct Box {
     Machine m;
@@ -70,6 +71,39 @@ void box_free(Box *b)
     if (b->installed) machine_free(&b->m);
     buf_free(&b->bootlog);
     rb_free(b);
+}
+
+/* The machine's daemons get their slice. `kernel_tick` is NOMINAL's, and it
+ * is exactly the right shape: cooperative, budgeted in instructions, and
+ * deterministic -- a script that runs off the end of its budget resumes
+ * where it left off next tick rather than being killed. */
+void box_run_slices(Box *b, int slices)
+{
+    if (!b || slices <= 0) return;
+    Buf console;
+    buf_init(&console);
+    kernel_tick(&b->m, slices, &console);
+    buf_free(&console);
+}
+
+bool box_start(Box *b, const char *path, char *err, size_t errcap)
+{
+    if (!b) { snprintf(err, errcap, "no machine"); return false; }
+    Buf console;
+    buf_init(&console);
+    int64_t rc = kernel_start_daemon(&b->m, "/bin/py", path, "script", 0, &console, NULL);
+    /* THE MACHINE'S OWN WORDS, not ours. "could not start" is what a wrapper
+     * says; the kernel knows whether the file was missing, not executable or
+     * not an ELF, and that sentence is the difference between a player fixing
+     * it in ten seconds and giving up. */
+    if (rc < 0) {
+        snprintf(err, errcap, "%s", console.len ? console.p : "the computer refused it");
+        for (char *p = err; *p; p++) if (*p == '\n') { *p = 0; break; }
+        buf_free(&console);
+        return false;
+    }
+    buf_free(&console);
+    return true;
 }
 
 void box_sh(Box *b, const char *line, Buf *out)

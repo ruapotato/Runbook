@@ -2,7 +2,7 @@
 # Determinism gate. Handoff decision 16: failure is deterministic per seed.
 #
 # That decision is not about fairness to the player, or not only. The balance
-# harness (--play, --naive, --vacation) grades numbers, and an agent cannot
+# harness (--fight) grades numbers, and an agent cannot
 # tune a curve that moves under it between runs. Every number in §5 and §10 of
 # the handoff is meant to be settled by running the game, which is only
 # possible if running it twice means the same thing.
@@ -28,26 +28,26 @@ trap 'rm -rf "$WORK" 2>/dev/null; true' EXIT
 
 BIN=build/runbook
 SEED=${SEED:-424242}
-# LONG ENOUGH TO COMPOUND. A one-day run reproduces by accident; growth,
-# attrition and the weekly waves only have room to drift apart over months of
-# simulated time, and drift is what this gate is looking for.
-#
-# 45 days is a whole game: the reference agent plays from forty users through
-# the Act I wall and the whole of Act II, closing about a thousand tickets. It
-# used to be 120 days of an UNPLAYED world, which was both less meaningful and
-# far slower -- nobody works the queue, so every ticket goes past its SLA and
-# gets chased forever, and the gate spent minutes hashing a queue that exists
-# only because there is no player.
-DAYS=${DAYS:-45}
+# LONG ENOUGH TO COMPOUND. A ten-tick fight reproduces by accident. Over 1200
+# ticks -- two minutes of a fight, longer than most of them last -- the enemy
+# fires a dozen volleys, fires catch and spread room to room, oxygen drains
+# through a breach and the crew suffocate. Every one of those is a coin the
+# RNG flips, and each one moves the next. Drift is what this gate looks for,
+# and drift needs room to happen.
+TICKS=${TICKS:-1200}
 
 [ -x "$BIN" ] || { echo "determinism: $BIN not built"; exit 1; }
 
-# A PLAYED RUN, NOT A GROWN ONE. The reference agent works the queue for
-# $DAYS simulated days -- thousands of appliance calls, every failure mode
-# rolled, every retry taken -- and the world that comes out the other end is
-# what gets compared. Hashing a world nobody touched would prove that the
-# growth model is deterministic and nothing else.
-run() { "$BIN" --play --seed "$1" --days "$DAYS" --out "$2" >/dev/null 2>&1; }
+# A FIGHT NOBODY IS FLYING, which is not the same as a world nobody touched.
+# Left alone the Kestrel is not static: the raider keeps shooting, fires take
+# hold and spread, hull and oxygen come apart on their own. There is plenty
+# happening for two runs to disagree about.
+#
+# What this does NOT cover is the emulated computer -- a script running on the
+# guest is part of the world now, and its instruction stream is not in this
+# hash. That is the next thing this gate should grow, and saying so here is
+# cheaper than discovering the hole later.
+run() { "$BIN" --seed "$1" --ticks "$TICKS" --out "$2" >/dev/null 2>&1; }
 
 fail=0
 
@@ -55,7 +55,7 @@ fail=0
 run "$SEED" "$WORK/a.json"
 run "$SEED" "$WORK/b.json"
 if cmp -s "$WORK/a.json" "$WORK/b.json"; then
-    echo "determinism: PASS  same seed reproduces byte-identically ($DAYS days, $(wc -c <"$WORK/a.json") bytes)"
+    echo "determinism: PASS  same seed reproduces byte-identically ($TICKS ticks, $(wc -c <"$WORK/a.json") bytes)"
 else
     echo "determinism: FAIL  same seed produced two different worlds"
     diff "$WORK/a.json" "$WORK/b.json" | head -10
@@ -115,8 +115,7 @@ elif ! make -s windows >/dev/null 2>&1; then
     echo "determinism: FAIL  the Windows cross-build broke"
     fail=1
 else
-    WINEDEBUG=-all WINEPREFIX="$WINEPFX" "$WINE64" build/win/runbook.exe --play \
-        --seed "$SEED" --days "$DAYS" --out "$WORK/win.json" >/dev/null 2>&1 || true
+    WINEDEBUG=-all WINEPREFIX="$WINEPFX" "$WINE64" build/win/runbook.exe --seed "$SEED" --ticks "$TICKS" --out "$WORK/win.json" >/dev/null 2>&1 || true
     if [ -f "$WORK/win.json" ] && cmp -s "$WORK/a.json" "$WORK/win.json"; then
         echo "determinism: PASS  Linux and Windows agree byte-for-byte"
     else

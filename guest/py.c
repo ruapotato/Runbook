@@ -54,9 +54,17 @@ static VmStatus n_print(VM *v, Value *a, int n, Value *out)
     return VM_OK;
 }
 
-/* api(line) -- THE ONE THAT MATTERS. The same protocol the desktop's forms
- * send, from a script, on this machine. Returns the response as a string. */
-static VmStatus n_api(VM *v, Value *a, int n, Value *out)
+/* do(command) -- THE ONE THAT MATTERS.
+ *
+ * The same command the button sends. `do("power shields 3")` is what clicking
+ * on the shields does, and there is nothing a button can send that this
+ * cannot -- which is the whole reason the console can honestly mirror your
+ * clicking, and the reason a script is a first-class way to play rather than
+ * a bolted-on convenience.
+ *
+ * It is called do() and not api() because a player reading their own recorded
+ * script should see a verb, not an acronym. */
+static VmStatus n_do(VM *v, Value *a, int n, Value *out)
 {
     (void)v; (void)n;
     if (!IS_STR(a[0])) { *out = VAL_NIL; return VM_OK; }
@@ -64,6 +72,25 @@ static VmStatus n_api(VM *v, Value *a, int n, Value *out)
     if (got < 0) { *out = str_newz("-ERR no world attached\n"); return VM_OK; }
     *out = str_new(apibuf, (size_t)got);
     return VM_OK;
+}
+
+/* ship() -- the whole ship, as one answer, ready for json().
+ *
+ * A script that acts without looking is a macro. A script that looks is a
+ * program, and this is the line that separates them:
+ *
+ *     s = json(ship())
+ *     if s["weapon"] == "100":
+ *         do("fire")
+ */
+static VmStatus n_ship(VM *v, Value *a, int n, Value *out)
+{
+    (void)a; (void)n;
+    Value line = str_newz("ship");
+    Value args[1] = { line };
+    VmStatus st = n_do(v, args, 1, out);
+    val_release(line);
+    return st;
 }
 
 /* len, str, int -- the three conversions every script needs in its first
@@ -425,7 +452,9 @@ static VmStatus n_exit(VM *v, Value *a, int n, Value *out)
 
 static const Native NATIVES[] = {
     { "print", 0, 8, n_print },
-    { "api",   1, 1, n_api   },
+    { "do",    1, 1, n_do    },
+    { "api",   1, 1, n_do    },   /* the old name, still answered */
+    { "ship",  0, 0, n_ship  },
     { "len",   1, 1, n_len   },
     { "str",   1, 1, n_str   },
     { "int",   1, 1, n_int   },
@@ -482,18 +511,19 @@ void _start(void)
                "A Python subset on this machine: if/elif/else, while, for/in,\n"
                "def/return, integers, strings, lists and dicts.\n"
                "\n"
-               "  api(line)     one line of the company's API, as a string\n"
-               "  json(text)    one answer, as a dict you can index\n"
+               "  do(command)   one command to the ship -- the same one a button sends\n"
+               "  ship()        the whole ship, ready for json()\n"
+               "  json(text)    an answer, as a dict you can index\n"
                "  lines(text)   an answer, as a list of lines\n"
                "  lists         append, join, keys, has, len\n"
                "  strings       split, find, sub, lower, upper, strip, replace, str, int\n"
                "  files         read(path), write(path, text)\n"
                "  print, exit\n"
                "\n"
-               "  r = api(\"ticket.list open 5\")\n"
-               "  for l in lines(r):\n"
-               "      t = json(l)\n"
-               "      print(t[\"id\"], t[\"ref\"])\n");
+               "  while True:\n"
+               "      s = json(ship())\n"
+               "      if s[\"weapon\"] == \"100\":\n"
+               "          do(\"fire\")\n");
         g_exit(2);
     }
 

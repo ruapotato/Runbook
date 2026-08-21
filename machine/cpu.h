@@ -70,6 +70,18 @@ struct Cpu {
     uint64_t   memsz;
 
     uint64_t   icount;         /* instructions retired — deterministic */
+    /* RUNBOOK: WHAT A SYSCALL COSTS, in instructions.
+     *
+     * A host syscall does real work and the guest pays four instructions to
+     * ask for it, so an expensive one is free from the scheduler's point of
+     * view -- and a `while True` polling loop ran three and a half thousand
+     * times inside a single tick, which is a script with the brakes off.
+     *
+     * A syscall handler adds to this and cpu_run charges it against the
+     * budget, so a call into the game costs what it is worth. Deterministic,
+     * like everything else here: the same script pays the same price on every
+     * platform, every run. */
+    uint64_t   charge;
     CpuTrap    trap;
     uint64_t   trap_addr;      /* the address or encoding that caused it */
     int64_t    exit_code;

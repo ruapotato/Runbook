@@ -465,10 +465,21 @@ CpuTrap cpu_run(Cpu *c, uint64_t budget)
         case 0x73: { /* system */
             if (ins == 0x00000073) {          /* ecall */
                 if (!c->syscall) { c->trap = TRAP_HOST; return c->trap; }
+                /* see Cpu.charge in cpu.h */
+                c->charge = 0;
                 int64_t r = c->syscall(c, (int64_t)c->x[17], (int64_t)c->x[10],
                                        (int64_t)c->x[11], (int64_t)c->x[12], c->ctx);
                 if (c->trap != TRAP_NONE) { c->pc = next; return c->trap; }
                 c->x[10] = (uint64_t)r;
+                /* And what it cost. Charged against this run's budget, so an
+                 * expensive syscall ends the slice early rather than being
+                 * free. */
+                if (c->charge) {
+                    if (c->charge >= budget - n) { n = budget - 1; }
+                    else n += c->charge;
+                    c->icount += c->charge;
+                    c->charge = 0;
+                }
             } else if (ins == 0x00100073) {   /* ebreak */
                 c->trap = TRAP_EBREAK; c->pc = next; return c->trap;
             } else {
