@@ -1,0 +1,152 @@
+# Veridian Ledger DX — the directory of record.
+#
+# The first appliance in the game, and the one every other appliance ends up
+# referring to. Onboarding a user starts here: an account, a department group,
+# and a membership joining the two. Getting that order wrong is the point
+# (handoff §8.2) -- add_member references accounts and groups, so a script
+# that adds the membership first fails loudly rather than leaving a half-made
+# person behind.
+id: veridian_dx
+model: Veridian Ledger DX
+vendor: veridian
+kind: directory
+interfaces: [web, api]
+capacity: 600              # users served at nominal; past this, latency climbs (§5)
+credential_days: 0         # the directory authenticates the operator, not a service account
+doc: "The directory of record. Accounts, groups and memberships for the whole org."
+
+state:
+  accounts:
+    key: [login]
+    reuse_key: no          # a login is never free again; see spec.h
+    fields: [login, user_ref, display_name, dept, status]
+  groups:
+    key: [name]
+    fields: [name, dept]
+  memberships:
+    key: [login, group]
+    fields: [login, group]
+
+endpoints:
+  - id: list_accounts
+    op: list
+    collection: accounts
+    filter: dept
+    latency_ms: 180
+    doc: "Every account, or every account in one department."
+    examples:
+      - "api.call {inst} list_accounts"
+      - "api.call {inst} list_accounts dept=engineering"
+
+  - id: get_account
+    op: get
+    collection: accounts
+    fields: [login]
+    required: [login]
+    latency_ms: 120
+    doc: "One account by login. 404 if there is no such account."
+    examples:
+      - "api.call {inst} get_account login={login}"
+
+  - id: create_account
+    op: create
+    collection: accounts
+    fields: [login, user_ref, display_name, dept, status]
+    required: [login, user_ref, display_name, dept]
+    idempotent_on: [login]
+    latency_ms: 400
+    failure_modes: [transient, timeout_after_commit]
+    doc: "Create an account. The login must be unique across every account the directory has ever held, including departed ones."
+    examples:
+      - "api.call {inst} create_account login={newlogin} user_ref={user} display_name=Test dept=engineering status=active"
+
+  - id: update_account
+    op: update
+    collection: accounts
+    fields: [login, display_name, dept, status]
+    required: [login]
+    latency_ms: 300
+    failure_modes: [transient]
+    doc: "Change an account's department, display name or status."
+    examples:
+      - "api.call {inst} update_account login={login} status=active"
+
+  - id: delete_account
+    op: delete
+    collection: accounts
+    fields: [login]
+    required: [login]
+    latency_ms: 300
+    doc: "Remove an account. The login is not released; it stays spent."
+    examples:
+      - "api.call {inst} delete_account login={newlogin}"
+
+  - id: list_groups
+    op: list
+    collection: groups
+    latency_ms: 120
+    doc: "Every group the directory knows."
+    examples:
+      - "api.call {inst} list_groups"
+
+  - id: create_group
+    op: create
+    collection: groups
+    fields: [name, dept]
+    required: [name]
+    idempotent_on: [name]
+    latency_ms: 300
+    doc: "Create a group. Creating one that exists is not an error."
+    examples:
+      - "api.call {inst} create_group name=dept-engineering dept=engineering"
+
+  - id: list_members
+    op: list
+    collection: memberships
+    filter: group
+    latency_ms: 150
+    doc: "Memberships, or the members of one group."
+    examples:
+      - "api.call {inst} list_members"
+      - "api.call {inst} list_members group=dept-engineering"
+
+  - id: add_member
+    op: create
+    collection: memberships
+    fields: [login, group]
+    required: [login, group]
+    idempotent_on: [login, group]
+    references: { login: accounts, group: groups }
+    latency_ms: 350
+    failure_modes: [transient, timeout_after_commit]
+    doc: "Put an account in a group. Both must already exist."
+    examples:
+      - "api.call {inst} add_member login={login} group=dept-engineering"
+
+  - id: remove_member
+    op: delete
+    collection: memberships
+    fields: [login, group]
+    required: [login, group]
+    latency_ms: 300
+    doc: "Take an account out of a group."
+    examples:
+      - "api.call {inst} remove_member login={login} group=dept-engineering"
+
+forms:
+  - id: account_new
+    title: "New account"
+    calls: create_account
+    fields: [login, user_ref, display_name, dept]
+  - id: account_edit
+    title: "Edit account"
+    calls: update_account
+    fields: [login, display_name, dept, status]
+  - id: group_new
+    title: "New group"
+    calls: create_group
+    fields: [name, dept]
+  - id: member_add
+    title: "Add to group"
+    calls: add_member
+    fields: [login, group]

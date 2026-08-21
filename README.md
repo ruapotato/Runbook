@@ -8,15 +8,19 @@ in this file that disagrees with it is stale, and the handoff wins.
 
 ## Where this is
 
-**M0.** The harness, and nothing else. There is no game here yet: no
-appliances, no tickets, no client. What exists is an org that boots from a
-seed, grows, and can be driven entirely over an API — plus the two gates that
-say so.
+**M1.** An org, one appliance, and the API. No tickets and no client yet.
 
-That order is deliberate (handoff §15). The gates exist before the gameplay
-because they are the reason this project can be built by agents at all, and
-because a balance harness bolted on afterwards is measuring a game that has
-already been tuned by argument.
+The org has forty people and a directory of record with an account, a
+department group and a membership for each of them — all of it there before
+the player arrives, and all of it attributed to nobody. You can onboard a
+forty-first over the socket, by hand through a form or by script through the
+API, and the directory will argue with you about it: logins collide,
+memberships need their account to exist first, a retried create is not a
+duplicate, and one write in two hundred commits and then times out.
+
+A **person and their account are different objects**, and that is the game. A
+User is what HR knows. Their login, groups and (later) mailbox and home folder
+live in appliances, and putting them there is the work.
 
 ## Build and check
 
@@ -46,9 +50,9 @@ line, so a dumb client can find the end without parsing the body.
 
 | Gate | What it asserts | State |
 |---|---|---|
-| `--health` | A pristine org boots; identifiers are sound; a departed user's login is never reissued; offboarding is idempotent; every verb `help` advertises actually dispatches | live |
+| `--health` | Specs load and validate; a pristine org boots with its directory intact and following its own naming convention; every endpoint in every spec responds; idempotency, ordering and spent logins behave; every verb `help` advertises dispatches | live |
 | determinism | Same seed reproduces byte-for-byte over 120 simulated days; a different seed diverges; `-O0` and `-O2` agree; the Linux and Windows builds agree | live |
-| `--mancheck` | Every command example in every in-game document executes | M1 |
+| `--mancheck` | Every example in every generated manual executes against a live world; every endpoint is documented | live |
 | `--naive` | The naive bot's failure rate stays inside the handoff §8 band | M5 |
 | `--play` | A reference agent plays all three acts over the API | M2 |
 | `--vacation N` | N days, zero input, against §12 | M7 |
@@ -64,24 +68,45 @@ prefix. Without them it prints `SKIP` and the command to fix it.
 ## Layout
 
 ```
-core/rb.h       limits, buffers, the RNG, the hash
-core/util.c     lifted from NOMINAL, trimmed
-core/world.h/.c the org: people, clock, growth, provenance
-core/proto.h/.c the API — the only way anything talks to the world
-core/serve.c    the local socket; lifted from NOMINAL's net.c
-core/health.c   the health gate
-core/main.c     the command line; the only file that knows one exists
+core/rb.h        limits, buffers, the RNG, the hash, provenance
+core/util.c      lifted from NOMINAL, trimmed
+core/yaml.h/.c   the subset of YAML the specs are written in
+core/spec.h/.c   appliance specs: load, and above all validate
+core/appl.h/.c   instances, records, and calling an endpoint
+core/world.h/.c  the org: people, clock, growth, appliances
+core/proto.h/.c  the API — the only way anything talks to the world
+core/serve.c     the local socket; lifted from NOMINAL's net.c
+core/health.c    the health gate
+core/mancheck.c  every documented example, executed
+core/main.c      the command line; the only file that knows one exists
+specs/*.yaml     the appliance library; embedded by tools/mkspecs.sh
 ```
 
 The core is a library. `main.c` is the only file that knows about a command
 line, so everything else links unchanged into the GDExtension when the client
 arrives at M3. The world lives in the model; Godot will be a view of it.
 
-## What M1 does next
+## Writing an appliance
 
-Appliances from spec files, the API surface generated from those specs, and
-one directory appliance you can onboard a user through over the socket. Two
-seams are already cut for it: `world_day_advance()` computes the day's hires
-and applies them in a separate loop, which is where the ticket generator
-lands at M2; and `Session.prov` already distinguishes work done by hand from
-work done by script, which is the debt mechanic (§11) that M6 reads back.
+One YAML file. It drives the endpoints, the web forms, the manual and the
+examples the gate executes — one source, so they cannot disagree.
+
+```sh
+$EDITOR specs/my_appliance.yaml
+./build/runbook --specs specs/ --mancheck     # iterate without a rebuild
+./tools/mkspecs.sh && make check              # embed it and check it in
+```
+
+Endpoints declare an operation (`list`, `get`, `create`, `update`, `delete`)
+over a named collection, plus the things that make scripting them a game:
+`idempotent_on`, `references`, `failure_modes`, `latency_ms`. `--health`
+refuses a spec that documents an endpoint it cannot dispatch, a form that
+offers a field its endpoint will not take, or a model claiming an API from a
+vendor that does not sell one.
+
+## What M2 does next
+
+Tickets: typed objects with `acceptance` checks the game evaluates against
+world state. The player never marks anything done. The seam is already cut —
+`world_day_advance()` computes the day's hires and applies them in a separate
+loop, and that loop is where the ticket generator lands.

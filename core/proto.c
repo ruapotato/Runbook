@@ -62,10 +62,41 @@ static int dept_by_name(const char *s)
 static void put_user(Buf *out, const User *u)
 {
     buf_printf(out,
-        "{\"id\":\"%s\",\"login\":\"%s\",\"given\":\"%s\",\"family\":\"%s\","
+        "{\"id\":\"%s\",\"given\":\"%s\",\"family\":\"%s\","
         "\"dept\":\"%s\",\"prov\":\"%s\",\"hired_day\":%d,\"left_day\":%d}\n",
-        u->id, u->login, u->given, u->family,
+        u->id, u->given, u->family,
         rb_dept_name[u->dept], prov_name((Prov)u->prov), u->hired_day, u->left_day);
+}
+
+/* k=v arguments, which is what every appliance call takes. Splitting here
+ * rather than in each verb keeps the argument shape identical between
+ * api.call and form.submit — the same fields, whether a script sent them or a
+ * player typed them into a form. That identity is what makes the macro
+ * recorder possible at M4. */
+static int parse_fields(char *argv[MAX_ARGV], int from, int argc, Field *f, int cap, char *err, size_t errcap)
+{
+    int n = 0;
+    for (int i = from; i < argc; i++) {
+        char *eq = strchr(argv[i], '=');
+        if (!eq) { snprintf(err, errcap, "argument %d is not field=value: %s", i - from + 1, argv[i]); return -1; }
+        if (n >= cap) { snprintf(err, errcap, "too many fields"); return -1; }
+        *eq = 0;
+        snprintf(f[n].k, sizeof f[n].k, "%s", argv[i]);
+        snprintf(f[n].v, sizeof f[n].v, "%s", eq + 1);
+        n++;
+    }
+    return n;
+}
+
+/* The response shape for any appliance call. The status code is on the +OK
+ * line and the body follows, so a script can branch without parsing the body
+ * — and so a script that ignores the status still gets the body, which is
+ * how the legacy vendor catches people out. */
+static void put_result(Buf *out, const ApiResult *r)
+{
+    buf_printf(out, "+OK %d %s%d ms\n", r->status, r->committed ? "committed " : "", r->ms);
+    buf_put(out, r->body.p ? r->body.p : "", r->body.len);
+    buf_puts(out, "\n.\n");
 }
 
 /* ---------------------------------------------------------------- session */
@@ -109,6 +140,14 @@ static void cmd_help(Buf *out)
         "user.add <given> <family> <dept>   returns the id and the derived login\n"
         "user.offboard <id>            idempotent\n"
         "depts                         valid department names\n"
+        "\n"
+        "models                        every appliance model there is a spec for\n"
+        "appl.list                     appliances installed in this org\n"
+        "appl.info <instance>          one appliance: load, record counts\n"
+        "appl.doc <instance|model>     the manual: every endpoint, every field\n"
+        "appl.forms <instance|model>   the web UI, as data\n"
+        "api.call <instance> <endpoint> [field=value ...]\n"
+        "form.submit <instance> <form> [field=value ...]\n"
         "quit\n"
         ".\n");
 }
@@ -133,9 +172,11 @@ bool proto_exec(Session *s, const char *line, Buf *out)
 
     if (!strcmp(cmd, "world.info")) {
         buf_printf(out, "+OK {\"org\":\"%s\",\"seed\":%llu,\"day\":%d,\"minute\":%d,"
-                        "\"day_minutes\":%d,\"users_total\":%zu,\"users_active\":%d}\n.\n",
-                   w->org, (unsigned long long)w->seed, w->day, w->minute,
-                   RB_DAY_MINUTES, w->nusers, w->active);
+                        "\"minutes_left\":%d,\"day_minutes\":%d,\"users_total\":%zu,"
+                        "\"users_active\":%d,\"appliances\":%zu}\n.\n",
+                   w->org, (unsigned long long)w->seed, w->day, world_minute(w),
+                   RB_DAY_MINUTES - world_minute(w),
+                   RB_DAY_MINUTES, w->nusers, w->active, w->ninst);
         return true;
     }
 
@@ -177,6 +218,169 @@ bool proto_exec(Session *s, const char *line, Buf *out)
         return true;
     }
 
+    /* ------------------------------------------------------- appliances */
+    if (!strcmp(cmd, "appl.list")) {
+        buf_puts(out, "+OK appliances\n");
+        for (size_t i = 0; i < w->ninst; i++) { inst_render(w->inst[i], out); buf_putc(out, '\n'); }
+        buf_puts(out, ".\n");
+        return true;
+    }
+
+    if (!strcmp(cmd, "appl.info")) {
+        if (argc < 2) { err(out, "appl.info <instance>"); return true; }
+        Inst *in = world_inst(w, argv[1]);
+        if (!in) { err(out, "no such appliance: %s", argv[1]); return true; }
+        buf_puts(out, "+OK appliance\n");
+        inst_render(in, out);
+        buf_puts(out, "\n.\n");
+        return true;
+    }
+
+    /* THE MANUAL. Generated from the same spec that drives the endpoints, so
+     * it cannot document something that does not exist (handoff §13). This is
+     * what --mancheck executes. */
+    if (!strcmp(cmd, "appl.doc")) {
+        if (argc < 2) { err(out, "appl.doc <instance|model>"); return true; }
+        Inst *in = world_inst(w, argv[1]);
+        const Model *m = in ? in->m : spec_model(w->specs, argv[1]);
+        if (!m) { err(out, "no such appliance or model: %s", argv[1]); return true; }
+        const Vendor *v = spec_vendor(w->specs, m->vendor);
+        buf_printf(out, "+OK %s\n", m->model);
+        buf_printf(out, "%s\n", m->doc);
+        buf_printf(out, "vendor: %s (%s) — %s\n", v->name, arch_name(v->arch), v->doc);
+        buf_printf(out, "interfaces: %s%s%s\n",
+                   m->has_web ? "web" : "", (m->has_web && m->has_api) ? ", " : "",
+                   m->has_api ? "api" : "");
+        buf_printf(out, "capacity: %d at nominal; rate limit %d calls/minute\n",
+                   m->capacity, v->rate_limit);
+        for (int i = 0; i < m->ncoll; i++) {
+            const CollSpec *cs = &m->coll[i];
+            buf_printf(out, "collection %s: keyed by", cs->name);
+            for (int k = 0; k < cs->nkey; k++) buf_printf(out, " %s", cs->key[k]);
+            buf_printf(out, "%s; fields:", cs->reuse_key ? "" : " (keys are never reused)");
+            for (int f = 0; f < cs->nfield; f++) buf_printf(out, " %s", cs->field[f]);
+            buf_putc(out, '\n');
+        }
+        for (int i = 0; i < m->nep; i++) {
+            const Endpoint *e = &m->ep[i];
+            buf_printf(out, "\nendpoint %s (%s %s, %d ms)\n", e->id, op_name(e->op), e->coll, e->latency_ms);
+            if (e->doc[0]) buf_printf(out, "  %s\n", e->doc);
+            if (e->nfield) {
+                buf_puts(out, "  fields:");
+                for (int f = 0; f < e->nfield; f++) buf_printf(out, " %s", e->field[f]);
+                buf_putc(out, '\n');
+            }
+            if (e->nrequired) {
+                buf_puts(out, "  required:");
+                for (int f = 0; f < e->nrequired; f++) buf_printf(out, " %s", e->required[f]);
+                buf_putc(out, '\n');
+            }
+            if (e->nidem) {
+                buf_puts(out, "  idempotent on:");
+                for (int f = 0; f < e->nidem; f++) buf_printf(out, " %s", e->idem[f]);
+                buf_putc(out, '\n');
+            }
+            for (int f = 0; f < e->nref; f++)
+                buf_printf(out, "  %s must already exist in %s\n", e->reffield[f], e->refcoll[f]);
+            if (e->failure_modes) {
+                buf_puts(out, "  can fail with:");
+                if (e->failure_modes & FM_RATE_LIMITED)         buf_puts(out, " rate_limited");
+                if (e->failure_modes & FM_TRANSIENT)            buf_puts(out, " transient");
+                if (e->failure_modes & FM_TIMEOUT_AFTER_COMMIT) buf_puts(out, " timeout_after_commit");
+                if (e->failure_modes & FM_STALL)                buf_puts(out, " stall");
+                buf_putc(out, '\n');
+            }
+            for (int x = 0; x < e->nexample; x++) buf_printf(out, "  example: %s\n", e->example[x]);
+        }
+        buf_puts(out, ".\n");
+        return true;
+    }
+
+    /* The web UI, as data. No client renders it until M3; it is served now so
+     * that when one does, it renders THIS rather than growing its own idea of
+     * what the appliance can do (handoff decision 6). */
+    if (!strcmp(cmd, "appl.forms")) {
+        if (argc < 2) { err(out, "appl.forms <instance|model>"); return true; }
+        Inst *in = world_inst(w, argv[1]);
+        const Model *m = in ? in->m : spec_model(w->specs, argv[1]);
+        if (!m) { err(out, "no such appliance or model: %s", argv[1]); return true; }
+        buf_puts(out, "+OK forms\n");
+        for (int i = 0; i < m->nform; i++) {
+            const Form *f = &m->form[i];
+            buf_printf(out, "{\"id\":\"%s\",\"title\":\"%s\",\"calls\":\"%s\",\"theme\":\"%s\",\"fields\":[",
+                       f->id, f->title, f->calls, m->theme);
+            for (int k = 0; k < f->nfield; k++) buf_printf(out, "%s\"%s\"", k ? "," : "", f->field[k]);
+            buf_puts(out, "]}\n");
+        }
+        buf_puts(out, ".\n");
+        return true;
+    }
+
+    if (!strcmp(cmd, "models")) {
+        buf_puts(out, "+OK models\n");
+        for (size_t i = 0; i < w->specs->nmodel; i++) {
+            const Model *m = &w->specs->model[i];
+            const Vendor *v = spec_vendor(w->specs, m->vendor);
+            buf_printf(out, "{\"id\":\"%s\",\"model\":\"%s\",\"vendor\":\"%s\",\"arch\":\"%s\","
+                            "\"kind\":\"%s\",\"api\":%s,\"cost\":%d}\n",
+                       m->id, m->model, v->name, arch_name(v->arch), m->kind,
+                       m->has_api ? "true" : "false", v->cost);
+        }
+        buf_puts(out, ".\n");
+        return true;
+    }
+
+    /* --------------------------------------------------------- the calls */
+    if (!strcmp(cmd, "api.call")) {
+        if (argc < 3) { err(out, "api.call <instance> <endpoint> [field=value ...]"); return true; }
+        Inst *in = world_inst(w, argv[1]);
+        if (!in) { err(out, "no such appliance: %s", argv[1]); return true; }
+        Field f[SPEC_MAX_FIELDS];
+        char perr[128];
+        int nf = parse_fields(argv, 3, argc, f, SPEC_MAX_FIELDS, perr, sizeof perr);
+        if (nf < 0) { err(out, "%s", perr); return true; }
+        ApiResult r;
+        appl_call(w, in, argv[2], f, nf, s->prov, &r);
+        put_result(out, &r);
+        buf_free(&r.body);
+        return true;
+    }
+
+    /* THE OTHER WAY IN, AND THE ONE ACT I IS PLAYED WITH.
+     *
+     * A form submission is the same call with three differences: it works on
+     * appliances that have no API, it is attributed to a hand, and it costs
+     * whole minutes of the day instead of milliseconds. That last one is the
+     * Act I → Act II pressure expressed as a number (§10): two minutes is
+     * nothing at five tickets a day and is the entire day at forty. */
+    if (!strcmp(cmd, "form.submit")) {
+        if (argc < 3) { err(out, "form.submit <instance> <form> [field=value ...]"); return true; }
+        Inst *in = world_inst(w, argv[1]);
+        if (!in) { err(out, "no such appliance: %s", argv[1]); return true; }
+        const Form *form = NULL;
+        for (int i = 0; i < in->m->nform; i++) if (!strcmp(in->m->form[i].id, argv[2])) form = &in->m->form[i];
+        if (!form) { err(out, "no such form on %s: %s", in->id, argv[2]); return true; }
+        Field f[SPEC_MAX_FIELDS];
+        char perr[128];
+        int nf = parse_fields(argv, 3, argc, f, SPEC_MAX_FIELDS, perr, sizeof perr);
+        if (nf < 0) { err(out, "%s", perr); return true; }
+        for (int i = 0; i < nf; i++) {
+            bool offered = false;
+            for (int k = 0; k < form->nfield; k++) if (!strcmp(f[i].k, form->field[k])) offered = true;
+            if (!offered) { err(out, "the %s form has no %s field", form->id, f[i].k); return true; }
+        }
+        ApiResult r;
+        /* A form is operated by a person, whatever session asked for it. */
+        appl_call(w, in, form->calls, f, nf, PROV_HAND, &r);
+        /* The API latency already came out of the day; a human filling in a
+         * form costs the rest of the two minutes. */
+        int human = RB_FORM_MINUTES * 60000 - r.ms;
+        if (human > 0) { world_spend_ms(w, human); r.ms += human; }
+        put_result(out, &r);
+        buf_free(&r.body);
+        return true;
+    }
+
     if (!strcmp(cmd, "user.list")) {
         bool all = (argc > 1 && !strcmp(argv[1], "all"));
         int n = 0;
@@ -192,9 +396,8 @@ bool proto_exec(Session *s, const char *line, Buf *out)
     }
 
     if (!strcmp(cmd, "user.get")) {
-        if (argc < 2) { err(out, "user.get <id|login>"); return true; }
+        if (argc < 2) { err(out, "user.get <id>"); return true; }
         User *u = world_user_find(w, argv[1]);
-        if (!u) u = world_user_by_login(w, argv[1]);
         if (!u) { err(out, "no such user: %s", argv[1]); return true; }
         buf_puts(out, "+OK user\n");
         put_user(out, u);
@@ -208,10 +411,13 @@ bool proto_exec(Session *s, const char *line, Buf *out)
         if (d < 0) { err(out, "no such department: %s (try 'depts')", argv[3]); return true; }
         User *u = world_user_add(w, s->prov, argv[1], argv[2], (uint8_t)d);
         if (!u) { err(out, "%s", w->err); return true; }
-        /* The derived login is returned rather than echoed back from input,
-         * because de-collision may have changed it and a script that assumes
-         * otherwise is one of the bugs Act II is about (handoff §8.1). */
-        ok(out, "{\"id\":\"%s\",\"login\":\"%s\"}", u->id, u->login);
+        /* A person, and nothing else. No account, no mailbox, no group. What
+         * comes back is an id and the login the org's convention WOULD give
+         * them — a suggestion, not a reservation. The directory may already
+         * have it, and finding that out is the player's job (handoff §8.1). */
+        char suggest[RB_NAME_MAX];
+        world_login_for(w, u, suggest, sizeof suggest);
+        ok(out, "{\"id\":\"%s\",\"convention_login\":\"%s\"}", u->id, suggest);
         return true;
     }
 

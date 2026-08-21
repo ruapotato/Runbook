@@ -22,7 +22,7 @@
 /* Every one of these raises a named error on overflow. None truncates
  * silently — a world that quietly stops growing at the cap would show up as
  * a balance problem days later instead of as an error now. */
-#define RB_ID_MAX     24
+#define RB_ID_MAX     32
 #define RB_NAME_MAX   48
 #define RB_LINE_MAX   8192
 #define RB_ERR_MAX    256
@@ -61,6 +61,31 @@ uint64_t rng_next(Rng *r);
 /* uniform in [0,1) with 53 bits, deterministic across platforms */
 double   rng_unit(Rng *r);
 int32_t  rng_range(Rng *r, int32_t lo, int32_t hi);
+
+/* ----------------------------------------------------------- provenance */
+/* How every object in the world came to exist (handoff §11). It lives here,
+ * in the lowest header, because it is stamped on people, on appliance records
+ * and on everything added later — and a concept that every layer records is
+ * not owned by any one of them.
+ *
+ * Recorded from the first commit even though nothing reads it until M6's
+ * migration ticket, because retrofitting provenance onto objects created
+ * before it existed is exactly the debt the mechanic is about, and living it
+ * once in our own codebase is not the intended lesson.
+ *
+ * PROV_SEED is the org as it stood on day one, before the player arrived. It
+ * is not PROV_HAND: the player did not do that work, and the migration that
+ * silently misses hand-made records must not blame them for the ones they
+ * inherited. */
+typedef enum {
+    PROV_SEED = 0,
+    PROV_HAND,
+    PROV_SCRIPT,
+    PROV_SYSTEM,
+    PROV__N
+} Prov;
+
+const char *prov_name(Prov p);
 
 /* ------------------------------------------------------------------ hash */
 /* FNV-1a 64. The world state hash the determinism gate compares. */

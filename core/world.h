@@ -15,27 +15,7 @@
 #define RB_WORLD_H
 
 #include "rb.h"
-
-/* ----------------------------------------------------------- provenance */
-/* How every object in the world came to exist (handoff §11). Recorded from
- * the first commit even though nothing reads it until M6's migration ticket,
- * because retrofitting provenance onto objects created before it existed is
- * exactly the debt the mechanic is about — and living it once, in our own
- * codebase, is not the intended lesson.
- *
- * PROV_SEED is the org as it stood on day one, before the player arrived.
- * It is not PROV_HAND: the player did not do that work, and the migration
- * that silently misses hand-made records must not blame them for the ones
- * they inherited. */
-typedef enum {
-    PROV_SEED = 0,
-    PROV_HAND,
-    PROV_SCRIPT,
-    PROV_SYSTEM,
-    PROV__N
-} Prov;
-
-const char *prov_name(Prov p);
+#include "appl.h"
 
 /* ---------------------------------------------------------- departments */
 /* Six, because department is what group membership, share paths and the
@@ -45,9 +25,18 @@ const char *prov_name(Prov p);
 extern const char *const rb_dept_name[RB_DEPT__N];
 
 /* ---------------------------------------------------------------- users */
+/* A PERSON, NOT AN ACCOUNT, and the distinction is the game.
+ *
+ * A User is what HR knows: somebody was hired, into a department, on a day.
+ * Their login, mailbox, home folder and group memberships are not here --
+ * they live in the appliances, and putting them there is the player's job.
+ * Onboarding is the act of making a person's records exist across several
+ * systems; if the world created them, there would be nothing to do.
+ *
+ * It is also what makes offboarding unforgiving (handoff §6). The person
+ * leaves; whatever was never written down stays behind. */
 typedef struct {
     char    id[RB_ID_MAX];       /* u_00042 — stable, never reused, even after leaving */
-    char    login[RB_NAME_MAX];  /* jdoe — the naming convention's output */
     char    given[RB_NAME_MAX];
     char    family[RB_NAME_MAX];
     uint8_t dept;
@@ -61,6 +50,17 @@ typedef struct {
  * is where §5's "the wall lands at roughly 40 tickets/day" comes from. If
  * this number moves, that wall moves with it. */
 #define RB_DAY_MINUTES 480
+/* Carried in milliseconds, because an API call costs 150-500ms (§10) and a
+ * minute-resolution clock would round every one of them to nothing -- at
+ * which point the rate limit is the only throughput dial left and latency
+ * stops being a thing the player can feel. 28,800,000 fits in an int32 with
+ * two orders of magnitude to spare. */
+#define RB_DAY_MS (RB_DAY_MINUTES * 60000)
+/* What one form submission costs a human. Handoff §5: manual onboarding is 6
+ * submissions across 3 appliances and about 12 in-game minutes, and the day
+ * budget of 480 is what puts the Act I wall at roughly 40 tickets a day. Move
+ * this and the wall moves with it. */
+#define RB_FORM_MINUTES 2
 
 /* --------------------------------------------------------- growth model */
 /* Handoff §5. STARTING VALUES FOR THE BALANCE HARNESS, NOT SACRED — the
@@ -79,30 +79,21 @@ typedef struct {
 #define RB_START_USERS     40   /* Act I opens here (§5) */
 
 /* ---------------------------------------------------------------- world */
-typedef struct {
+struct World {
     char     org[RB_NAME_MAX];
     uint64_t seed;
     Rng      rng;
 
     int32_t  day;                /* day 0 is the player's first day */
-    int32_t  minute;             /* minute of the working day, 0..RB_DAY_MINUTES */
+    int32_t  ms;                 /* into the working day, 0..RB_DAY_MS */
+
+    Specs   *specs;              /* borrowed; the caller owns them */
+    Inst   **inst;
+    size_t   ninst;
+    int32_t  next_inst;
 
     User    *users;
     size_t   nusers, ucap;
-
-    /* Login index: open addressing, power of two, slot holds index+1 with 0
-     * for empty. Derived state — it is not hashed and not dumped.
-     *
-     * It is here at M0 because the naive version was measurably fatal: a
-     * linear scan per de-collision made a 120-day run take 111 seconds and a
-     * 60-day run take 25 milliseconds, which is the shape of a gate that
-     * quietly stops being run. The same lookup is on the path of every
-     * onboarding a player's script will ever do.
-     *
-     * There are no tombstones because there are no deletions: a login is
-     * never released, not even when its owner leaves. See login_derive(). */
-    uint32_t *lidx;
-    size_t    lcap;
     int32_t  next_uid;
     int32_t  active;             /* cached: users with left_day < 0 */
 
@@ -111,19 +102,17 @@ typedef struct {
     int64_t  hire_milli, leave_milli;
 
     char     err[RB_ERR_MAX];
-} World;
+};
 
 /* Boot a pristine org from a seed: the company as it was the day before the
  * player was hired. Every user it creates is PROV_SEED. */
-World *world_new(uint64_t seed);
+World *world_new(uint64_t seed, Specs *specs);
 void   world_free(World *w);
 
-/* Add a user. `login` is derived from the name by the org's convention and
- * de-collided; the caller does not choose it, because in Act II the player's
- * script will not choose it either. Returns NULL and sets w->err on failure. */
+/* Hire a person. Nothing is provisioned for them -- that is the game.
+ * Returns NULL and sets w->err on failure. */
 User  *world_user_add(World *w, Prov prov, const char *given, const char *family, uint8_t dept);
 User  *world_user_find(World *w, const char *id);
-User  *world_user_by_login(World *w, const char *login);
 /* Offboard. Idempotent on purpose (handoff §8.3): calling it twice is not an
  * error, it is the correct answer to a retried batch. */
 bool   world_user_offboard(World *w, const char *id);
@@ -131,6 +120,24 @@ bool   world_user_offboard(World *w, const char *id);
 /* Advance one whole day: growth, waves, attrition. Returns the number of
  * users hired. */
 int    world_day_advance(World *w);
+
+/* Spend in-game time. Rolls into the next day when the budget runs out, which
+ * is not an error condition -- running out of day IS the pressure (§4). Every
+ * roll runs a full world_day_advance(), so the users you have not onboarded
+ * yet are joined by tomorrow's. Returns the number of days rolled. */
+int    world_spend_ms(World *w, int ms);
+int    world_minute(const World *w);
+
+/* Appliances. */
+Inst  *world_inst(World *w, const char *id);
+Inst  *world_install(World *w, const char *model_id, Prov prov);
+/* The org's login convention, applied to a person. It is ORG POLICY, not a
+ * service: the player must reproduce it themselves when they onboard, and
+ * getting it wrong is a real mistake with real consequences. This function
+ * exists so that the forty people already in the directory on day one follow
+ * the same rule the player is expected to follow -- and so the in-game
+ * document describing it cannot drift from what the org actually did. */
+void   world_login_for(const World *w, const User *u, char *out, size_t cap);
 
 /* The fingerprint the determinism gate compares. Covers everything a replay
  * must reproduce and nothing that is merely how we stored it — no pointers,

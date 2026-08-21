@@ -1,0 +1,15 @@
+# Veridian Systems — the good one (handoff §9).
+#
+# Clean API, sane errors, honest status codes, expensive. A player ten hours
+# in will pay double to avoid the cheap vendor, and this is what they are
+# paying for: everything Veridian sells is scriptable the moment it is
+# unboxed. Feeling that preference is the game teaching something true about
+# procurement.
+vendor: veridian
+name: Veridian Systems
+archetype: good
+theme: veridian_slate
+cost: 240
+rate_limit: 60
+transient_bp: 200          # 2.0% — the §10 baseline, at the low end
+doc: "Enterprise identity and infrastructure. Documented, predictable, and priced accordingly."
