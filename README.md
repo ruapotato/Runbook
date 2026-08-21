@@ -27,6 +27,29 @@ vacation: PASS  no service went over nominal capacity
 vacation: the company ran itself for 7 days. Go on holiday.
 ```
 
+## The person who had this job before you
+
+`/home/pvane` is a home directory you can reconstruct somebody from: a work
+diary that runs March to July and gets shorter as it goes, a handover, a
+vendor thread with Halcyon support that never once answers the question, a
+shell history, and an onboarding script abandoned three-quarters finished
+with a README saying exactly what is wrong with it.
+
+It is also the tutorial. The naming convention is in `notes.txt` because that
+is where somebody doing this job would have written it down. The ordering
+rules are there too. And `bin/README` lists the three things wrong with the
+half-finished script — no collision check, no verification, no retry — which
+are precisely the three things Act II is about.
+
+> *The day I wrote the loop was the best day I had here. I should have had it
+> in week one. Everything after that was me not fixing a script I already
+> knew was wrong, because there was never a morning free to do it, because
+> the script was not fixed.*
+
+Every technical sentence in it is true of this world and was checked by
+running it. A player who reads a machine and is lied to never reads anything
+again.
+
 ## The machine
 
 Under the desktop is a whole computer: **an RV64IM emulator running a real

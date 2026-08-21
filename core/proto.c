@@ -240,9 +240,43 @@ bool proto_exec(Session *s, const char *line, Buf *out)
     if (!strcmp(cmd, "day.advance")) {
         int n = (argc > 1) ? atoi(argv[1]) : 1;
         if (n < 1 || n > 3650) { err(out, "day.advance takes 1..3650"); return true; }
+        /* WHAT THE DAY WAS, which is the only reward this game has to give.
+         *
+         * Going home used to answer "day 4, hired 3, active 47" -- true, and
+         * not a thing anybody feels. A day in this job is one long queue and
+         * then it is over, and if nothing tells you what you got through, the
+         * only number you ever see is how far behind you are.
+         *
+         * So: what you closed, how many were on time, who did the work, and
+         * what tomorrow looks like. The provenance line is the one that
+         * matters over a run -- the day the "script" column overtakes the
+         * "hand" column is the day the game is actually about. */
+        int32_t closed0 = w->closed_total, breach0 = w->breached_total;
+        int32_t raised0 = w->next_tid, users0 = w->active;
+        int hand0 = 0, script0 = 0;
+        for (size_t i = 0; i < w->ntick; i++) {
+            if (w->tick[i].closed_day < 0) continue;
+            if (w->tick[i].closed_prov == PROV_HAND) hand0++;
+            else if (w->tick[i].closed_prov == PROV_SCRIPT || w->tick[i].closed_prov == PROV_SYSTEM) script0++;
+        }
         int hired = 0;
         for (int i = 0; i < n; i++) hired += world_day_advance(w);
-        ok(out, "day %d, hired %d, active %d", w->day, hired, w->active);
+        int hand1 = 0, script1 = 0;
+        for (size_t i = 0; i < w->ntick; i++) {
+            if (w->tick[i].closed_day < 0) continue;
+            if (w->tick[i].closed_prov == PROV_HAND) hand1++;
+            else if (w->tick[i].closed_prov == PROV_SCRIPT || w->tick[i].closed_prov == PROV_SYSTEM) script1++;
+        }
+        int closed = w->closed_total - closed0;
+        int late = w->breached_total - breach0;
+        buf_printf(out, "+OK day %d\n", w->day);
+        buf_printf(out, "{\"day\":%d,\"closed\":%d,\"on_time\":%d,\"late\":%d,"
+                        "\"by_hand\":%d,\"by_script\":%d,\"arrived\":%d,\"hired\":%d,"
+                        "\"open\":%d,\"users\":%d,\"grew_by\":%d}\n",
+                   w->day, closed, closed - late, late,
+                   hand1 - hand0, script1 - script0,
+                   w->next_tid - raised0, hired, w->open_count, w->active, w->active - users0);
+        buf_puts(out, ".\n");
         return true;
     }
 

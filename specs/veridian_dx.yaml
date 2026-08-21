@@ -96,7 +96,11 @@ endpoints:
     op: create
     collection: accounts
     fields: [login, user_ref, display_name, dept, status]
-    required: [login, user_ref, display_name, dept]
+    # user_ref is NOT required: a service account belongs to nobody, and a
+    # directory that refuses to hold one is a directory nobody can run a
+    # backup job from. An onboarding ticket still wants it -- that is the
+    # ticket's business, in its acceptance checks, not the appliance's.
+    required: [login, display_name, dept]
     idempotent_on: [login]
     latency_ms: 400
     failure_modes: [timeout_after_commit]

@@ -90,10 +90,17 @@ var desktop_shown := true
 var _geom := {}
 
 # --------------------------------------------------------------- the menus
-# Applications, Places, System. Places lists the appliances, because in this
-# game the places you go ARE the appliances -- and it is discovered from the
-# API, so buying a second mail server puts it in the menu. That is the whole
-# of Act III arriving in the furniture.
+# Applications, Places, System.
+#
+# PLACES IS PLACES, which took a correction. It listed the appliances, on the
+# reasoning that in this game the places you go ARE the appliances -- which is
+# a nice sentence and wrong about the menu it is describing. In MATE, Places
+# is Home Folder, Documents, Computer: locations on the disk, opening a file
+# browser. Appliances are programs, and programs go in Applications.
+#
+# Getting that backwards is exactly the kind of clever that makes a desktop
+# feel unfamiliar for no gain, which is the opposite of why this shape was
+# chosen (§14, and the fact that everybody has used one of these).
 const MENUS := ["Applications", "Places", "System"]
 
 # IDEMPOTENT, AND CALLED FROM BOTH ENDS.
@@ -399,17 +406,29 @@ func _menu_items(which: int) -> Array:
 						 {"label": "Terminal", "kind": "Terminal", "icon": "term"},
 						 {"label": "Files", "kind": "Files", "icon": "files"},
 						 {"label": "Script editor", "kind": "Editor", "icon": "editor"},
-						 {"label": "— Games —", "kind": "", "icon": "game"}]
+						 {"label": "", "kind": "", "icon": "app"}]
+			# The appliances the company owns, discovered from the API rather
+			# than listed -- so buying a second mail server puts it in the
+			# menu, which is Act III arriving in the furniture.
+			for raw in api.objects(api.exec("appl.list")):
+				var a: Dictionary = raw
+				apps.append({"label": str(a.get("id", "?")), "kind": "appl:%s" % a.get("id", "?"),
+							 "icon": _icon_for(str(a.get("kind", ""))),
+							 "sub": str(a.get("model", ""))})
+			apps.append({"label": "", "kind": "", "icon": "app"})
 			apps.append_array(GAMES)
 			return apps
 		1:
-			var out := []
-			for raw in api.objects(api.exec("appl.list")):
-				var a: Dictionary = raw
-				out.append({"label": str(a.get("id", "?")), "kind": "appl:%s" % a.get("id", "?"),
-							"icon": _icon_for(str(a.get("kind", ""))),
-							"sub": str(a.get("model", ""))})
-			return out
+			# PLACES, as a desktop means it: somewhere on the disk, opening a
+			# file browser. The previous administrator's home directory is in
+			# here because it is worth finding, and finding it by accident
+			# while looking for something else is how anybody finds anything.
+			return [{"label": "Home Folder", "kind": "go:/root", "icon": "files"},
+					{"label": "Scripts", "kind": "go:/root/scripts", "icon": "editor"},
+					{"label": "Examples", "kind": "go:/root/examples", "icon": "manual"},
+					{"label": "P. Vane's home", "kind": "go:/home/pvane", "icon": "files"},
+					{"label": "", "kind": "", "icon": "app"},
+					{"label": "Computer", "kind": "go:/", "icon": "sysmon"}]
 		_:
 			return [{"label": "Go home (end the day)", "kind": "sys:day", "icon": "clock"},
 					{"label": "How the queue works", "kind": "sys:help", "icon": "manual"},
@@ -444,6 +463,9 @@ func _draw_menu() -> void:
 		if sep:
 			draw_line(Vector2(r.position.x + 6, y - 5), Vector2(r.position.x + r.size.x - 6, y - 5),
 				Color("#c4bfb7"), 1.0)
+			if str(it.get("label", "")) == "":
+				y += 8.0
+				continue
 		else:
 			Icons.draw_icon(self, Vector2(r.position.x + 6, y - 12), 15.0, str(it.get("icon", "app")))
 		draw_string(mono, Vector2(r.position.x + 26, y), str(it["label"]),
@@ -814,6 +836,20 @@ func _activate(kind: String) -> void:
 				tc2.feed("ticket.stats\n")
 		"sys:quit":
 			get_tree().quit()
+		_:
+			# A Place: open the file browser there. GDScript's match has no
+			# guard clause, so the prefix test lives in the default arm.
+			if kind.begins_with("go:"):
+				_launch("Files")
+				var fw := _find_window("Files")
+				if fw != null:
+					var fc: Node = fw.get_meta("content")
+					fc.cwd = kind.substr(3)
+					fc.viewing = ""
+					fc.scroll = 0
+					fc.refresh()
+			else:
+				_launch(kind)
 		_:
 			_launch(kind)
 

@@ -94,9 +94,55 @@ func _draw() -> void:
 
 	if selected >= 0 and selected < tickets.size():
 		_draw_detail(tickets[selected], lr.size.x + 10.0)
+	elif not day_report.is_empty():
+		_draw_day(lr.size.x + 10.0)
 	else:
 		draw_string(mono, Vector2(lr.size.x + 10, 66), "Pick a ticket.",
 			HORIZONTAL_ALIGNMENT_LEFT, -1, 12, th["dim"])
+
+func _draw_day(x: float) -> void:
+	var w := size.x - x - 8.0
+	var y := 66.0
+	var closed := int(str(day_report.get("closed", "0")))
+	var late := int(str(day_report.get("late", "0")))
+	var hand := int(str(day_report.get("by_hand", "0")))
+	var scripted := int(str(day_report.get("by_script", "0")))
+	var arrived := int(str(day_report.get("arrived", "0")))
+	var grew := int(str(day_report.get("grew_by", "0")))
+	var open_now := int(str(day_report.get("open", "0")))
+
+	draw_string(mono, Vector2(x, y), "End of day %s" % day_report.get("day", "?"),
+		HORIZONTAL_ALIGNMENT_LEFT, w, 14, th["ink"])
+	y += 26
+
+	var lines := []
+	if closed > 0:
+		lines.append(["You closed %d." % closed, th["ok"]])
+		if late > 0:
+			lines.append(["%d of them were late." % late, th["bad"]])
+		# THE LINE THAT MATTERS OVER A RUN. The day the second number
+		# overtakes the first is the day this game is actually about, and
+		# nobody has to be told what it means.
+		if scripted > 0 and hand > 0:
+			lines.append(["%d by hand, %d by a script." % [hand, scripted], th["accent"]])
+		elif scripted > 0:
+			lines.append(["All of them by a script. You were not needed." % [], th["accent"]])
+		elif hand > 0:
+			lines.append(["All %d by hand." % hand, th["dim"]])
+	else:
+		lines.append(["You closed nothing today.", th["bad"]])
+
+	lines.append(["", th["dim"]])
+	lines.append(["%d arrived overnight. The company grew by %d." % [arrived, grew], th["ink"]])
+	if open_now > 0:
+		lines.append(["%d waiting in the morning." % open_now, th["bad"] if open_now > 12 else th["dim"]])
+	else:
+		lines.append(["Nothing waiting. Go home properly.", th["ok"]])
+
+	for raw in lines:
+		var l: Array = raw
+		draw_string(mono, Vector2(x, y), str(l[0]), HORIZONTAL_ALIGNMENT_LEFT, w, 12, l[1])
+		y += 18
 
 func _draw_detail(t: Dictionary, x: float) -> void:
 	var w := size.x - x - 8.0
@@ -185,9 +231,25 @@ func _gui_input(e: InputEvent) -> void:
 	   and e.position.x > _list_rect().size.x:
 		var mb := e as InputEventMouseButton
 		if mb.pressed:
-			sel_a = _line_at(mb.position)
-			sel_b = sel_a
-			dragging_sel = sel_a >= 0
+			sel_line = _line_at(mb.position)
+			sel_col = _col_at(sel_line, mb.position.x) if sel_line >= 0 else 0
+			sel_line2 = sel_line
+			sel_col2 = sel_col
+			dragging_sel = sel_line >= 0
+			# A DOUBLE CLICK TAKES THE WORD, because that is what a double
+			# click does everywhere and because the thing anybody wants out of
+			# this panel is one word: a login, an id, a share name.
+			if mb.double_click and sel_line >= 0:
+				var l := str((painted[sel_line] as Dictionary)["text"])
+				var a := sel_col
+				var b := sel_col
+				while a > 0 and _wordish(l, a - 1):
+					a -= 1
+				while b < l.length() and _wordish(l, b):
+					b += 1
+				sel_col = a
+				sel_col2 = b
+				Clip.set_primary(selected_text())
 		else:
 			dragging_sel = false
 			var s := selected_text()
@@ -197,9 +259,11 @@ func _gui_input(e: InputEvent) -> void:
 		accept_event()
 		return
 	if e is InputEventMouseMotion and dragging_sel:
-		var at := _line_at((e as InputEventMouseMotion).position)
+		var mp: Vector2 = (e as InputEventMouseMotion).position
+		var at := _line_at(mp)
 		if at >= 0:
-			sel_b = at
+			sel_line2 = at
+			sel_col2 = _col_at(at, mp.x)
 			queue_redraw()
 		return
 	if e is InputEventMouseButton and e.pressed:
@@ -222,10 +286,11 @@ func _gui_input(e: InputEvent) -> void:
 		if e.position.x < lr.size.x and e.position.y > lr.position.y:
 			var idx := scroll + int((e.position.y - lr.position.y - 2.0) / _row_h())
 			if idx >= 0 and idx < tickets.size():
+				day_report = {}
 				selected = idx
 				checks.clear()
-				sel_a = -1
-				sel_b = -1
+				sel_line = -1
+				sel_line2 = -1
 				_check()
 				# The ticket number, ready to paste. It is the single most
 				# retyped string in the game.
@@ -245,29 +310,79 @@ func _gui_input(e: InputEvent) -> void:
 # It costs one array and it means the login, the user id and the ticket
 # number are all one click from being pasted, which is most of what this job
 # is made of.
-var painted: Array = []          # [{rect, text}]
-var sel_a := -1
-var sel_b := -1
+var painted: Array = []          # [{rect, text, size, x}]
+# CHARACTER POSITIONS, not line numbers.
+#
+# The first version selected whole lines, which is the sort of thing that
+# looks like selection until you want a login out of the middle of a sentence
+# -- and getting a login out of the middle of a sentence is most of why
+# anybody selects anything here. The font is monospace, so a column is an
+# x-offset divided by one character's width, and the only reason this needs
+# any care at all is that the panel draws at four different sizes.
+var sel_line := -1
+var sel_col := 0
+var sel_line2 := -1
+var sel_col2 := 0
+
+func _char_w(i: int) -> float:
+	var p: Dictionary = painted[i]
+	return maxf(1.0, mono.get_string_size("M", HORIZONTAL_ALIGNMENT_LEFT, -1, int(p["size"])).x)
+
+func _col_at(i: int, x: float) -> int:
+	var p: Dictionary = painted[i]
+	var n := int(round((x - float(p["x"])) / _char_w(i)))
+	return clampi(n, 0, str(p["text"]).length())
 
 func selected_text() -> String:
-	if sel_a < 0:
+	if sel_line < 0 or sel_line2 < 0:
 		if selected >= 0 and selected < tickets.size():
 			return str((tickets[selected] as Dictionary).get("id", ""))
 		return ""
-	var lo: int = mini(sel_a, sel_b)
-	var hi: int = maxi(sel_a, sel_b)
+	var a := sel_line
+	var ac := sel_col
+	var b := sel_line2
+	var bc := sel_col2
+	if b < a or (b == a and bc < ac):
+		var t := a; a = b; b = t
+		var tc := ac; ac = bc; bc = tc
 	var out := PackedStringArray()
-	for i in range(lo, mini(hi + 1, painted.size())):
-		out.append(str((painted[i] as Dictionary)["text"]))
+	for i in range(a, mini(b + 1, painted.size())):
+		var l := str((painted[i] as Dictionary)["text"])
+		var s0: int = clampi(ac if i == a else 0, 0, l.length())
+		var s1: int = clampi(bc if i == b else l.length(), 0, l.length())
+		if s1 > s0:
+			out.append(l.substr(s0, s1 - s0))
 	return "\n".join(out)
 
 func _paint(text: String, at: Vector2, w: float, sz: int, col: Color) -> void:
-	painted.append({"rect": Rect2(at.x, at.y - sz, w, sz + 5.0), "text": text})
-	if sel_a >= 0:
-		var i := painted.size() - 1
-		if i >= mini(sel_a, sel_b) and i <= maxi(sel_a, sel_b):
-			draw_rect(painted[i]["rect"], Color(0.30, 0.45, 0.68, 0.30))
+	painted.append({"rect": Rect2(at.x, at.y - sz, w, sz + 5.0), "text": text,
+					"size": sz, "x": at.x})
+	var i := painted.size() - 1
+	if sel_line >= 0 and sel_line2 >= 0:
+		var a := sel_line
+		var ac := sel_col
+		var b := sel_line2
+		var bc := sel_col2
+		if b < a or (b == a and bc < ac):
+			var t := a; a = b; b = t
+			var tc := ac; ac = bc; bc = tc
+		if i >= a and i <= b:
+			var cw: float = maxf(1.0, mono.get_string_size("M", HORIZONTAL_ALIGNMENT_LEFT, -1, sz).x)
+			var s0: int = clampi(ac if i == a else 0, 0, text.length())
+			var s1: int = clampi(bc if i == b else text.length(), 0, text.length())
+			if s1 > s0:
+				draw_rect(Rect2(at.x + s0 * cw, at.y - sz, (s1 - s0) * cw, sz + 5.0),
+					Color(0.30, 0.45, 0.68, 0.35))
 	draw_string(mono, at, text, HORIZONTAL_ALIGNMENT_LEFT, w, sz, col)
+
+# What counts as part of a word for a double click. Logins, ids, share names
+# and department names are all here, so hyphens, dots, underscores and @ are
+# in and spaces are not.
+func _wordish(s: String, i: int) -> bool:
+	var c := s[i]
+	if c == " " or c == "\t" or c == "," or c == "\"" or c == ":":
+		return false
+	return true
 
 func _line_at(p: Vector2) -> int:
 	for i in range(painted.size()):
@@ -309,9 +424,17 @@ func refresh_after_check() -> void:
 # early -- the day ends when you decide it does, and everything you did not
 # get to is still there tomorrow, with tomorrow's on top of it. That is the
 # entire punishment for falling behind (§2: no fail screen).
+# WHAT THE DAY WAS. See the note in proto.c on day.advance: this is the only
+# reward the game has to give, and a queue that just gets longer without ever
+# telling you what you got through is a game about losing slowly.
+var day_report: Dictionary = {}
+
 func _go_home() -> void:
-	api.exec("day.advance 1")
+	var r := api.objects(api.exec("day.advance 1"))
+	day_report = r[0] if r.size() > 0 else {}
 	scroll = 0
 	selected = -1
 	checks.clear()
+	sel_line = -1
+	sel_line2 = -1
 	refresh()

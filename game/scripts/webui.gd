@@ -193,6 +193,21 @@ func _build() -> void:
 					for o in opts:
 						ob.add_item(str(o))
 					_style_picker(ob)
+					# PICK THE PERSON AND THE REST FOLLOWS.
+					#
+					# "I don't see the point of a ref user, if we have to enter
+					# the dept anyway" -- which is right, and the answer is not
+					# to remove the field. A department is a fact ABOUT the
+					# person; asking for both is asking the operator to look
+					# something up that the form is already holding. So
+					# choosing a user fills in their department, their name,
+					# and the login the convention gives them.
+					#
+					# It is also the first place the game says out loud that
+					# these things are connected, which is the idea the whole
+					# job rests on.
+					if ftype == "ref" and str(f.get("of", "")) == "users":
+						ob.item_selected.connect(func(_i): _user_picked(ob))
 					add_child(ob)
 					edits.append(ob)
 					continue
@@ -249,6 +264,63 @@ func _field_input(le: LineEdit, e: InputEvent) -> void:
 			var sel := le.get_selected_text()
 			if sel != "":
 				Clip.set_primary(sel)
+
+func _field(name: String) -> Control:
+	for raw in edits:
+		var c: Control = raw
+		if str(c.get_meta("field")) == name:
+			return c
+	return null
+
+func _set_field(name: String, value: String) -> void:
+	var c := _field(name)
+	if c == null:
+		return
+	if bool(c.get_meta("picker", false)):
+		var ob: OptionButton = c
+		for i in range(ob.item_count):
+			if ob.get_item_text(i) == value:
+				ob.select(i)
+				return
+	else:
+		var le: LineEdit = c
+		if str(le.text).strip_edges() == "":
+			le.text = value
+
+# THE ORG'S NAMING CONVENTION, applied here so the form can suggest a login.
+#
+# It is a SUGGESTION and the box stays editable, because the directory may
+# already have it -- and finding that out is the player's job, which is the
+# whole of exception class 1. Filling it in is help; filling it in and
+# refusing to let go would be doing the interesting part for them.
+func _convention(given: String, family: String) -> String:
+	var out := ""
+	if given.length() > 0:
+		out = given.substr(0, 1).to_lower()
+	for i in range(family.length()):
+		var c := family[i]
+		if c.to_lower() != c.to_upper() or (c >= "0" and c <= "9"):
+			out += c.to_lower()
+	return out
+
+func _user_picked(ob: OptionButton) -> void:
+	if ob.selected <= 0:
+		return
+	# The label reads "Alma Barrow  (u_00041, sales)".
+	var label := ob.get_item_text(ob.selected)
+	var lp := label.find("(")
+	if lp < 0:
+		return
+	var name := label.substr(0, lp).strip_edges()
+	var id := label.substr(lp + 1).get_slice(",", 0).strip_edges()
+	var u := api.objects(api.exec("user.get " + id))
+	if u.is_empty():
+		return
+	var d: Dictionary = u[0]
+	_set_field("display_name", name)
+	_set_field("dept", str(d.get("dept", "")))
+	_set_field("login", _convention(str(d.get("given", "")), str(d.get("family", ""))))
+	queue_redraw()
 
 func _style_picker(ob: OptionButton) -> void:
 	ob.add_theme_color_override("font_color", th["ink"])

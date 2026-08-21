@@ -211,8 +211,38 @@ void ticket_evaluate(World *w, Ticket *t, Verdict *v)
                      * and what the migration reads back at M6. */
                     if (!prov_set) { prov = r->prov; prov_set = true; }
                 } else {
-                    snprintf(v->why[i], sizeof v->why[i], "no %s in %s matching %s=%s",
-                             ck->coll, ck->appliance, nw ? where[0].k : "", nw ? where[0].v : "");
+                    /* SAY WHAT TO DO, not just what is absent.
+                     *
+                     * "no memberships in the directory matching login=abarrow"
+                     * is true, and a player who does not already know the
+                     * answer learns nothing from it -- it names a table they
+                     * have never seen and a field they did not choose. What
+                     * they need is the appliance and the form.
+                     *
+                     * It is worked out from the specs rather than written in
+                     * the ticket, so it cannot drift: find an installed
+                     * appliance of this kind, find the form on it whose
+                     * endpoint creates this collection, and name it. A player
+                     * reading this can go and click the thing. */
+                    char fix[SPEC_DOC_MAX] = "";
+                    for (size_t k = 0; k < w->ninst && !fix[0]; k++) {
+                        const Inst *in2 = w->inst[k];
+                        if (strcmp(in2->m->kind, ck->appliance)) continue;
+                        for (int fi = 0; fi < in2->m->nform && !fix[0]; fi++) {
+                            const Endpoint *ep = model_endpoint(in2->m, in2->m->form[fi].calls);
+                            if (!ep || ep->op != OP_CREATE || strcmp(ep->coll, ck->coll)) continue;
+                            snprintf(fix, sizeof fix, " -- %s, \"%s\"",
+                                     in2->id, in2->m->form[fi].title);
+                        }
+                    }
+                    /* And what it would have to say, which is the part that
+                     * turns a diagnosis into an instruction. */
+                    char want[SPEC_DOC_MAX] = "";
+                    size_t o = 0;
+                    for (int f = 0; f < nw && o < sizeof want - 1; f++)
+                        o += (size_t)snprintf(want + o, sizeof want - o, "%s%s=%s",
+                                              f ? ", " : "", where[f].k, where[f].v);
+                    snprintf(v->why[i], sizeof v->why[i], "nothing has %s yet%s", want, fix);
                 }
             } else {
                 v->passed[i] = (r == NULL);

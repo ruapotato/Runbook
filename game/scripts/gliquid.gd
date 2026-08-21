@@ -38,16 +38,12 @@ const REVIVE := 10.0               # hp a fighter is left with when it changes s
 const DPS := 26.0                  # damage per second, per attacker, capped below
 const HEAL := 7.0                  # regeneration when nothing hostile is near
 const SPEED := 9.0                 # cells / second
-const ACCEL := 9.0
-const SEP_R := 1.05                # cells; below this two fighters shove apart
-const SEP_K := 34.0
 # HOW CLOSE IS CLOSE ENOUGH. Every fighter used to drive at the cursor POINT,
 # which meant three hundred of them converged on one cell and stacked into a
 # single overlapping dot -- "it's not a blob, it's just one overlapping dot".
 # Inside this radius the drive falls away and the shove takes over, so the
 # army spreads into a disc around the cursor and behaves like the liquid the
 # game is named after.
-const ARRIVE_R := 3.2
 const ATK_R := 0.9                 # cells; reach of a fighter
 const FAR := 1 << 28               # BFS "unreachable"
 const LIMIT := 180.0               # seconds; whoever is ahead at the bell wins
@@ -71,20 +67,6 @@ const FLOW_EVERY := 3
 # more fighters per cell, so the nine-bucket scan was walking seventy neighbours
 # per fighter and the tick cost 20 ms. Two things fix that, and the second one
 # is not just speed:
-#   * shoving is sampled -- at most NEIGH_CAP fighters per bucket, on alternate
-#     frames. A shove is a nudge; three neighbours give the same nudge as ten.
-#   * fighting does not use the scan at all. It reads the per-cell head counts
-#     built below. A cap on a scan is a cap in whatever order the buckets
-#     happen to be linked, and with a global cap of twenty-four a fighter in a
-#     packed blob spent its whole budget on its own side and never noticed the
-#     enemy pressed against it -- two test matches ran a full 150 seconds with
-#     not one fighter changing sides. Counts have no order to be biased by.
-const NEIGH_EVERY := 2
-const NEIGH_CAP := 6               # per bucket, not per fighter -- see below
-# Six, not three. Three was enough to keep a moving column liquid and nowhere
-# near enough to spread a three-hundred-strong clump that has arrived
-# somewhere and stopped.
-const SEP_R2 := SEP_R * SEP_R
 const ATK_R2 := ATK_R * ATK_R
 
 const BG := Color("#f3f1ea")
@@ -100,32 +82,41 @@ const C2_PALE := Color("#e0b09c")
 # Parallel arrays rather than an array of dictionaries: six hundred fighters
 # get touched several times a frame, and a dictionary lookup per field per
 # fighter per frame is the difference between smooth and not.
-var px := PackedFloat32Array()
-var py := PackedFloat32Array()
-var vx := PackedFloat32Array()
-var vy := PackedFloat32Array()
+# ONE FIGHTER PER CELL, WHICH IS WHAT MAKES IT LIQUID WAR.
+#
+# The first version had continuous positions and a soft shove between
+# neighbours, which is a perfectly good way to write a flocking demo and is
+# not this game: three hundred fighters converged on the cursor, interpenetrated
+# because nothing actually stopped them, and became a single mangled ball with
+# no edge. Both armies occupied the same space and every fighter had an enemy
+# next to it, so the interior was not protected and the whole thing resolved
+# in seconds.
+#
+# Liquid War is a GRID. A cell holds one fighter or nothing. A fighter steps
+# into an empty neighbour that is closer to its cursor, and if the closest
+# neighbour holds an ENEMY it attacks instead of moving. Everything the game
+# is famous for falls out of those two rules:
+#
+#   * the mass has a hard edge, because a cell is occupied or it is not;
+#   * only the surface fights, because an interior fighter has no enemy
+#     adjacent to it -- which is the thing that was missing;
+#   * the shapes flow round obstacles, because the only steering is "which
+#     way is downhill".
+#
+# It is also less code than the physics it replaces.
+var cell := PackedInt32Array()     # which cell each fighter is in
 var hp := PackedFloat32Array()
 var team := PackedByteArray()
-var dirx := PackedFloat32Array()   # the step this fighter last chose, kept between
-var diry := PackedFloat32Array()   # refreshes (see FLOW_EVERY)
+var holder := PackedInt32Array()   # which fighter is in each cell, -1 for none
+var move_t := PackedFloat32Array() # time owed, so fighters move at a speed
+
+# `holder`, not `owner`: Control already has one, and shadowing it is a parse
+# error rather than a subtle bug, which is the good kind of collision.
 var frame := 0
-
-# Neighbour lookup is a bucket grid, one bucket per map cell, held as an
-# intrusive linked list: head[cell] is the first fighter in it and nxt[i] is the
-# next. Rebuilding costs one pass over the fighters and every query touches nine
-# cells. The alternative is comparing all six hundred against all six hundred,
-# which is 360,000 distance tests a frame at sixty frames a second, and that is
-# not a thing GDScript is going to do while also drawing.
-var head := PackedInt32Array()
-var nxt := PackedInt32Array()
-var cnt0 := PackedInt32Array()     # fighters of each side per cell, rebuilt with
-var cnt1 := PackedInt32Array()     # the buckets; this is what combat reads
-
 var blocked := PackedByteArray()
 var field0 := PackedInt32Array()   # distance-to-cursor flood, team 0
 var field1 := PackedInt32Array()
 var fcell := [-1, -1]              # cell each field was flooded from
-
 var cursor := [Vector2.ZERO, Vector2.ZERO]
 var pop := [0, 0]
 var over := false
@@ -136,7 +127,6 @@ var held := {}
 var ai_t := 0.0
 var ai_goal := Vector2.ZERO
 var rng := RandomNumberGenerator.new()
-
 
 func _ready() -> void:
 	focus_mode = Control.FOCUS_ALL
@@ -288,35 +278,54 @@ func _flood(start: int) -> PackedInt32Array:
 
 func _new_game() -> void:
 	_make_map()
-	px = PackedFloat32Array(); py = PackedFloat32Array()
-	vx = PackedFloat32Array(); vy = PackedFloat32Array()
-	dirx = PackedFloat32Array(); diry = PackedFloat32Array()
-	hp = PackedFloat32Array(); team = PackedByteArray()
+	cell = PackedInt32Array()
+	hp = PackedFloat32Array()
+	team = PackedByteArray()
+	move_t = PackedFloat32Array()
+	holder = PackedInt32Array()
+	holder.resize(NCELL)
+	holder.fill(-1)
+
+	# Fill outward from each side's spawn, so an army starts as a BLOB rather
+	# than a scatter -- which is what it will be for the rest of the match, so
+	# starting any other way is just a second of settling nobody watches.
 	for t in range(2):
-		var c := _spawn_centre(t)
-		for _i in range(ARMY):
-			var p := c
-			for _tries in range(30):
-				p = c + Vector2(rng.randf_range(-3.5, 3.5), rng.randf_range(-3.5, 3.5))
-				if _open(int(p.x), int(p.y)):
-					break
-			px.push_back(p.x); py.push_back(p.y)
-			vx.push_back(0.0); vy.push_back(0.0)
-			dirx.push_back(0.0); diry.push_back(0.0)
-			hp.push_back(MAXHP); team.push_back(t)
-	head = PackedInt32Array(); head.resize(NCELL)
-	cnt0 = PackedInt32Array(); cnt0.resize(NCELL)
-	cnt1 = PackedInt32Array(); cnt1.resize(NCELL)
-	nxt = PackedInt32Array(); nxt.resize(px.size())
+		var c0 := _cell_of(_spawn_centre(t))
+		var seen := {}
+		var queue: Array = [c0]
+		seen[c0] = true
+		var placed := 0
+		while placed < ARMY and not queue.is_empty():
+			var at: int = queue.pop_front()
+			var ax: int = at % GW
+			var ay: int = int(at / GW)
+			if blocked[at] == 0 and holder[at] < 0:
+				holder[at] = cell.size()
+				cell.push_back(at)
+				hp.push_back(MAXHP)
+				team.push_back(t)
+				move_t.push_back(rng.randf())
+				placed += 1
+			for k in range(8):
+				var bx: int = ax + OX[k]
+				var by: int = ay + OY[k]
+				if bx < 0 or by < 0 or bx >= GW or by >= GH:
+					continue
+				var bc: int = by * GW + bx
+				if seen.has(bc) or blocked[bc] == 1:
+					continue
+				seen[bc] = true
+				queue.push_back(bc)
+
 	cursor = [_spawn_centre(0), _spawn_centre(1)]
 	fcell = [-1, -1]
 	ai_goal = _spawn_centre(1)
 	ai_t = 0.0
 	pop = [ARMY, ARMY]
+	clock = 0.0
+	frame = 0
 	over = false
 	winner = -1
-	clock = 0.0
-	queue_redraw()
 
 
 func _save() -> void:
@@ -332,7 +341,6 @@ func _process(dt: float) -> void:
 	frame += 1
 	_move_cursors(h)
 	_refresh_fields()
-	_rebuild_buckets()
 	_step(h)
 	_count()
 	# Two armies that both chase the other's centre of mass grind against each
@@ -351,26 +359,12 @@ func _process(dt: float) -> void:
 	queue_redraw()
 
 
-func _rebuild_buckets() -> void:
-	head.fill(-1)
-	cnt0.fill(0)
-	cnt1.fill(0)
-	for i in range(px.size()):
-		var cx := int(px[i])
-		var cy := int(py[i])
-		if cx < 0: cx = 0
-		elif cx >= GW: cx = GW - 1
-		if cy < 0: cy = 0
-		elif cy >= GH: cy = GH - 1
-		var c := cy * GW + cx
-		nxt[i] = head[c]
-		head[c] = i
-		if team[i] == 0:
-			cnt0[c] += 1
-		else:
-			cnt1[c] += 1
-
-
+# THE TICK. Every fighter that has earned a step takes one.
+#
+# Acting in a rotating order matters: a fixed order means the fighter with the
+# lowest index always gets the cell first, and a mass that always resolves the
+# same way develops a grain -- it flows better one direction than the other,
+# which you can see and cannot explain.
 func _refresh_fields() -> void:
 	# Only re-flood when a cursor has actually crossed into another cell.
 	# Otherwise this would be two floods a frame for no change in the answer.
@@ -384,161 +378,81 @@ func _refresh_fields() -> void:
 		fcell[1] = c1
 
 
-# One tick of the fluid. Every fighter: look up its next step from its side's
-# distance field, shove off whoever it is standing on, hurt whoever is hostile
-# and close, then move with walls stopping one axis at a time so it slides
-# along a face instead of sticking to it.
 func _step(dt: float) -> void:
-	var n := px.size()
-	var wall := blocked                    # locals: member lookups are not free
-	var cur0: Vector2 = cursor[0]
-	var cur1: Vector2 = cursor[1]
-	var blend: float = min(1.0, ACCEL * dt)
-	var vmax := SPEED * 1.8
-	var phase := frame % FLOW_EVERY
-	for i in range(n):
+	var wall := blocked
+	var speed := SPEED
+	var n := cell.size()
+
+	# Rotate who goes first.
+	var start := frame % maxi(1, n)
+
+	for idx in range(n):
+		var i: int = (start + idx) % n
+		move_t[i] += dt * speed
+		if move_t[i] < 1.0:
+			continue
+		move_t[i] -= 1.0
+
 		var t: int = team[i]
-		var x: float = px[i]
-		var y: float = py[i]
-		var cx := int(x)
-		var cy := int(y)
-		if cx < 0: cx = 0
-		elif cx >= GW: cx = GW - 1
-		if cy < 0: cy = 0
-		elif cy >= GH: cy = GH - 1
-		var row := cy * GW
+		var c: int = cell[i]
+		var cx: int = c % GW
+		var cy: int = int(c / GW)
+		var f: PackedInt32Array = field0 if t == 0 else field1
+		var here: int = f[c]
 
-		if i % FLOW_EVERY == phase:
-			var f: PackedInt32Array = field0 if t == 0 else field1
-			var cur: Vector2 = cur0 if t == 0 else cur1
-			# Aim of the tie-break: in open ground several neighbours are the
-			# same distance from the cursor, so preferring the one that lines up
-			# with the straight run to the cursor keeps the flow from crabbing
-			# diagonally in staircases when it could just walk over.
-			var wx := cur.x - x
-			var wy := cur.y - y
-			var wl := sqrt(wx * wx + wy * wy)
-			if wl > 0.001:
-				wx /= wl
-				wy /= wl
-			var bestscore := 1.0e18
-			var bx2 := 0.0
-			var by2 := 0.0
-			for k in range(8):
-				var ax: int = cx + OX[k]
-				var ay: int = cy + OY[k]
-				if ax < 0 or ay < 0 or ax >= GW or ay >= GH:
+		# The best step downhill, and what is in the way. An enemy in the best
+		# cell is a fight; an ally is a queue.
+		var best := here
+		var best_c := -1
+		var foe := -1
+		for k in range(8):
+			var ax: int = cx + OX[k]
+			var ay: int = cy + OY[k]
+			if ax < 0 or ay < 0 or ax >= GW or ay >= GH:
+				continue
+			var ac: int = ay * GW + ax
+			if wall[ac] == 1:
+				continue
+			# No squeezing through a corner join, same as any grid game.
+			if OX[k] != 0 and OY[k] != 0:
+				if wall[cy * GW + ax] == 1 or wall[ay * GW + cx] == 1:
 					continue
-				var arow := ay * GW
-				if wall[arow + ax] == 1:
-					continue
-				if OX[k] != 0 and OY[k] != 0:
-					if wall[arow + cx] == 1 or wall[row + ax] == 1:
-						continue      # no squeezing through a corner join
-				var dv: int = f[arow + ax]
-				if dv >= FAR:
-					continue
-				var sc: float = float(dv) - 0.4 * (ONX[k] * wx + ONY[k] * wy)
-				if sc < bestscore:
-					bestscore = sc
-					bx2 = ONX[k]
-					by2 = ONY[k]
-			# Near the cursor, ease off. `wl` is the distance to it, so this
-			# is one comparison and it is what turns a point-chase into a
-			# body of fluid finding its own level.
-			if wl < ARRIVE_R:
-				var ease: float = wl / ARRIVE_R
-				bx2 *= ease
-				by2 *= ease
-			if f[row + cx] == 0:
-				# Standing on the cursor: mill about it rather than pile up.
-				bx2 = wx * 0.20
-				by2 = wy * 0.20
-			dirx[i] = bx2
-			diry[i] = by2
+			var dv: int = f[ac]
+			if dv >= FAR or dv >= best:
+				continue
+			var occ: int = holder[ac]
+			if occ >= 0 and team[occ] != t:
+				# An enemy downhill. Remember the closest one; keep looking in
+				# case there is an empty cell that is closer still, because
+				# advancing beats fighting when you can.
+				if foe < 0:
+					foe = occ
+				continue
+			if occ >= 0:
+				continue                      # an ally: wait for them to move
+			best = dv
+			best_c = ac
 
-		# One pass over the nine surrounding buckets does both jobs: the shove
-		# that keeps the blob liquid, and the fighting.
-		var pushx := 0.0
-		var pushy := 0.0
-		if i % NEIGH_EVERY == frame % NEIGH_EVERY:
-			var ndt := dt * NEIGH_EVERY      # this pass stands in for the skipped one
-			var foe: PackedInt32Array = cnt1 if t == 0 else cnt0
-			# Enemies within reach, read off the counts. A fighter's reach is
-			# about one cell, so its own cell counts fully and the ring around
-			# it counts for the fraction of it that is actually in range.
-			var press := float(foe[row + cx])
-			for k in range(8):
-				var ax: int = cx + OX[k]
-				var ay: int = cy + OY[k]
-				if ax < 0 or ay < 0 or ax >= GW or ay >= GH:
-					continue
-				press += float(foe[ay * GW + ax]) * (0.2 if (OX[k] != 0 and OY[k] != 0) else 0.35)
-			if press > 0.0:
-				# Capped at three attackers so a fighter surrounded by a crowd
-				# dies fast but not instantly; uncapped, a front line evaporates
-				# the moment it touches and the battle has no shove to it.
-				hp[i] -= DPS * ndt * min(press, 3.0)
-				if hp[i] <= 0.0:
-					# Converted, not killed. The loser's fighter joins the
-					# winner weak, which is what makes a won engagement
-					# snowball.
-					team[i] = 1 - t
-					hp[i] = REVIVE
-					vx[i] = 0.0
-					vy[i] = 0.0
-					continue
-			else:
-				hp[i] = min(MAXHP, hp[i] + HEAL * ndt)
+		if best_c >= 0:
+			holder[c] = -1
+			holder[best_c] = i
+			cell[i] = best_c
+			continue
 
-			# Shoving, sampled: a few neighbours per bucket is enough of a nudge.
-			for oy2 in range(-1, 2):
-				var by := cy + oy2
-				if by < 0 or by >= GH:
-					continue
-				var brow := by * GW
-				for ox2 in range(-1, 2):
-					var bx := cx + ox2
-					if bx < 0 or bx >= GW:
-						continue
-					var j: int = head[brow + bx]
-					var seen := 0
-					while j != -1 and seen < NEIGH_CAP:
-						if j != i:
-							seen += 1
-							var ddx: float = px[j] - x
-							var ddy: float = py[j] - y
-							var d2 := ddx * ddx + ddy * ddy
-							if d2 < SEP_R2 and d2 > 0.000001:
-								var dl := sqrt(d2)
-								var sf: float = (SEP_R - dl) / dl
-								pushx -= ddx * sf
-								pushy -= ddy * sf
-						j = nxt[j]
+		if foe >= 0:
+			# ATTACK. Only the surface can reach this line: an interior
+			# fighter has allies on every side and never finds a foe.
+			hp[foe] -= DPS / speed
+			if hp[foe] <= 0.0:
+				# Converted, not killed -- the loser joins the winner weak,
+				# which is what makes a won engagement snowball and what
+				# Liquid War actually does.
+				team[foe] = t
+				hp[foe] = REVIVE
+			continue
 
-		var nvx: float = vx[i] + (dirx[i] * SPEED - vx[i]) * blend + pushx * SEP_K * dt
-		var nvy: float = vy[i] + (diry[i] * SPEED - vy[i]) * blend + pushy * SEP_K * dt
-		var sp := sqrt(nvx * nvx + nvy * nvy)
-		if sp > vmax:
-			nvx = nvx / sp * vmax
-			nvy = nvy / sp * vmax
-		var tx := x + nvx * dt
-		var ty := y + nvy * dt
-		# Axis-by-axis wall test: blocked diagonally, a fighter keeps the
-		# component that is still legal and slides along the face.
-		var ix := int(tx)
-		var iy := int(ty)
-		if ix < 0 or ix >= GW or wall[row + ix] == 1:
-			tx = x
-			ix = cx
-			nvx *= -0.2
-		if iy < 0 or iy >= GH or wall[iy * GW + ix] == 1:
-			ty = y
-			nvy *= -0.2
-		px[i] = clamp(tx, 0.6, GW - 0.6)
-		py[i] = clamp(ty, 0.6, GH - 0.6)
-		vx[i] = nvx
-		vy[i] = nvy
+		# Nowhere to go: heal. A fighter safe inside the mass comes back.
+		hp[i] = minf(MAXHP, hp[i] + HEAL / speed)
 
 
 func _count() -> void:
@@ -591,9 +505,9 @@ func _ai_cursor(dt: float) -> void:
 		var theirs := []
 		mine.resize(BW * BH); theirs.resize(BW * BH)
 		mine.fill(0.0); theirs.fill(0.0)
-		for i in range(px.size()):
-			var bx := int(clamp(px[i] / GW * BW, 0, BW - 1))
-			var by := int(clamp(py[i] / GH * BH, 0, BH - 1))
+		for i in range(cell.size()):
+			var bx := int(clamp(float(cell[i] % GW) / GW * BW, 0, BW - 1))
+			var by := int(clamp(float(int(cell[i] / GW)) / GH * BH, 0, BH - 1))
 			var w: float = hp[i] / MAXHP        # a hurt fighter is worth less
 			if team[i] == 1:
 				mine[by * BW + bx] += w
@@ -732,12 +646,16 @@ func _draw() -> void:
 					o + Vector2(x2 * c, y * c + 1.0), WALL_TOP, 1.0)
 			x = x2
 
-	var r: float = max(1.0, c * 0.62)
-	var half := r * 0.5
-	for i in range(px.size()):
+	# A FIGHTER IS ITS CELL, drawn edge to edge. That is what gives the mass a
+	# hard boundary and makes the shape readable at a glance: a filled region
+	# with a clean front, not a cloud of dots you have to squint at to find
+	# the edge of.
+	for i in range(cell.size()):
 		var f: float = clamp(hp[i] / MAXHP, 0.0, 1.0)
 		var col: Color = C1_PALE.lerp(C1, f) if team[i] == 0 else C2_PALE.lerp(C2, f)
-		draw_rect(Rect2(o.x + px[i] * c - half, o.y + py[i] * c - half, r, r), col)
+		var gx: float = float(cell[i] % GW)
+		var gy: float = float(int(cell[i] / GW))
+		draw_rect(Rect2(o.x + gx * c, o.y + gy * c, c + 0.5, c + 0.5), col)
 
 	for t in range(2):
 		var p: Vector2 = o + cursor[t] * c
