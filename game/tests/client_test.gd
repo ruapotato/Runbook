@@ -227,6 +227,66 @@ func _desktop_checks() -> void:
 	desk._launch("game:gsolitaire")
 	ck(desk._find_window("Solitaire") != null, "the desktop has solitaire on it, like every desktop")
 
+	_click_path(desk)
+
+# THE PATH A PERSON ACTUALLY TAKES.
+#
+# Everything above this drove the API. A player drives WIDGETS: they click a
+# form tab, type into boxes, and press Submit. Those are different code paths,
+# and the one a human uses is the one nothing had tested -- a form that
+# submitted the wrong field, or a Submit button whose hit rectangle was two
+# pixels off, would have passed every check in this file and wasted the first
+# playtest.
+#
+# So: click the tab, fill the boxes, press the button, and assert the world
+# changed.
+func _click_path(desk: Node) -> void:
+	desk._launch("appl:directory_01")
+	var win: Node = desk._find_window("directory_01")
+	if win == null:
+		ck(false, "the directory web UI opened")
+		return
+	var ui: Node = win.get_meta("content")
+	ck(ui.forms.size() >= 4, "its forms came from the spec, not from a scene")
+
+	# Click the "New account" tab, wherever the layout put it.
+	var tabs: Array = ui._tab_rects()
+	var click := InputEventMouseButton.new()
+	click.button_index = MOUSE_BUTTON_LEFT
+	click.pressed = true
+	click.position = (tabs[0] as Rect2).position + Vector2(6, 6)
+	ui._gui_input(click)
+	ck(ui.tab == 0 and ui.edits.size() == 4,
+	   "clicking the New account tab draws its four fields")
+	if ui.edits.size() != 4:
+		return
+
+	var api2: RunbookApi = ui.api
+	var before := api2.records(api2.exec("api.call directory_01 list_accounts")).size()
+
+	var values := {"login": "clicktest", "user_ref": "u_00001",
+				   "display_name": "Click_Test", "dept": "engineering"}
+	for raw in ui.edits:
+		var le: LineEdit = raw
+		le.text = str(values.get(str(le.get_meta("field")), ""))
+
+	# The Submit button, hit where it is drawn rather than where we think it is.
+	click.position = ui._submit_rect().position + Vector2(6, 6)
+	ui._gui_input(click)
+	ck(ui.result_good, "pressing Submit works: %s" % ui.result_line)
+
+	var after := api2.records(api2.exec("api.call directory_01 list_accounts")).size()
+	ck(after == before + 1, "and there is one more account in the directory than there was")
+
+	# The same button, again, on the same values. A player WILL do this -- and
+	# create_account is idempotent, so it must not be an error and must not
+	# make a second account.
+	click.position = ui._submit_rect().position + Vector2(6, 6)
+	ui._gui_input(click)
+	var again := api2.records(api2.exec("api.call directory_01 list_accounts")).size()
+	ck(ui.result_good and again == after,
+	   "and pressing it twice is not an error and does not make two")
+
 func _done() -> void:
 	print("client_test: %d checks, %d failures" % [checks, failures])
 	quit(1 if failures > 0 else 0)

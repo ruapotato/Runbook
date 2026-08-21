@@ -88,20 +88,6 @@ func body_lines(response: String) -> Array:
 			out.append(l)
 	return out
 
-# EVERY object in the response, INCLUDING one sitting on the +OK line.
-#
-# Short answers put their object there -- `+OK {"org":...}` -- and long ones
-# put a header there and the objects underneath. Reading only the body meant
-# world.info parsed to nothing and the panel clock showed question marks,
-# which looked like the clock being broken rather than the reader being wrong.
-func _object_lines(response: String) -> Array:
-	var out := body_lines(response)
-	var head := response.get_slice("\n", 0)
-	var brace := head.find("{")
-	if brace >= 0:
-		out.push_front(head.substr(brace))
-	return out
-
 # A flat {"k":"v", "k":123} object, which is what every answer in this game is
 # shaped like. Deliberately not a JSON parser: the day this needs one is the
 # day a response has grown a structure the player's script would also have to
@@ -215,10 +201,36 @@ func records(response: String) -> Array:
 		i = b + 9
 	return out
 
+# EVERY BALANCED {...} IN THE RESPONSE, wherever it sits.
+#
+# Answers come in three shapes and the reader has to take all of them: one
+# object on the +OK line (world.info), one object per line (ticket.list), and
+# a whole JSON ARRAY on a single line, which is what every list endpoint
+# returns. Reading line-by-line got two of the three -- so the file server's
+# browse view worked, because Halcyon answers XML, and the directory's showed
+# an empty list over forty accounts. The click-path check caught it; the
+# screenshots did not, because the view I had photographed was the XML one.
+#
+# Scanning for balanced braces takes all three and does not care which.
 func objects(response: String) -> Array:
 	var out := []
-	for raw in _object_lines(response):
-		var l := str(raw)
-		if l.begins_with("{"):
-			out.append(fields(l))
+	var depth := 0
+	var start := -1
+	var in_str := false
+	for i in range(response.length()):
+		var ch := response[i]
+		if ch == "\"":
+			in_str = not in_str
+		elif not in_str:
+			if ch == "{":
+				if depth == 0:
+					start = i
+				depth += 1
+			elif ch == "}":
+				depth -= 1
+				if depth == 0 and start >= 0:
+					out.append(fields(response.substr(start, i - start + 1)))
+					start = -1
+				elif depth < 0:
+					depth = 0
 	return out

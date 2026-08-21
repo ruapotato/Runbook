@@ -46,7 +46,7 @@ BIN = build/runbook
 # become the default and silently build the wrong thing.
 .DEFAULT_GOAL := all
 
-.PHONY: all check health mancheck play naive vacation client determinism clean windows specs gdext
+.PHONY: all check health mancheck play naive vacation client determinism clean windows specs gdext run shot
 
 all: $(BIN)
 
@@ -98,6 +98,25 @@ vacation: $(BIN)
 
 determinism: $(BIN)
 	@./tools/check_determinism.sh
+
+# PLAY IT. One command, and it finds a Godot the same way the gate does.
+run: gdext
+	@GODOT=$${GODOT:-$$(ls -1 $(HOME)/NOMINAL/Godot_v4.*-stable_linux.x86_64 \
+	   ./Godot_v4.*-stable_linux.x86_64 2>/dev/null | head -1)}; \
+	 if [ ! -x "$$GODOT" ]; then \
+	   echo "no Godot found. Set GODOT=/path/to/godot, or drop the binary in this directory."; \
+	   exit 1; \
+	 fi; \
+	 echo "runbook: $$GODOT"; \
+	 "$$GODOT" --path game
+
+# A picture of the desktop, without borrowing anybody's screen. Every
+# screenshot in the README comes from here, so what is shown is what the code
+# actually draws.
+shot: gdext
+	@GODOT=$${GODOT:-$$(ls -1 $(HOME)/NOMINAL/Godot_v4.*-stable_linux.x86_64 \
+	   ./Godot_v4.*-stable_linux.x86_64 2>/dev/null | head -1)}; \
+	 RUNBOOK_SHOT=$(PWD)/docs/desk.png "$$GODOT" --path game -s tests/shot.gd
 
 # THE CLIENT (M3). Skips cleanly when there is no Godot on the box; the C
 # gates are the ones that must be green everywhere.

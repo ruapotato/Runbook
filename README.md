@@ -58,10 +58,42 @@ leaves a script running, opens Solitaire, and watches the queue empty itself
 in the window behind it is the moment the whole design is arguing for.
 
 ```sh
-make gdext                                   # build the binding
-Godot_v4.7 --path game                       # play
-make client                                  # the client gate
+make run        # build the binding and play
+make shot       # render docs/desk.png without borrowing a screen
+make client     # the client gate
 ```
+
+## Playtesting Act I
+
+`make run`. You are the entire IT department of Harbrook Industries. Forty
+people work here; four more started this morning and have nothing.
+
+1. **Queue** opens on its own. Click a ticket. Press **Check** — every
+   acceptance test, and for the ones that fail, why.
+2. The ticket names its subject (`u_00041`) and their department. The
+   convention is in check two: first initial plus family name, a number only
+   if it collided.
+3. Open **directory_01**, **mail_01** and **fileserver_01** from *Places*.
+   Fill in the forms. Each submission costs two in-game minutes off the 480
+   in the top-right.
+4. Press **Check** again. When the world agrees, the ticket closes itself.
+   There is no Resolve button.
+5. **Go home** ends the day. Tomorrow brings more, and whatever you did not
+   finish is still there.
+
+Do that four times and you will have spent about an hour of the working day.
+Then imagine forty.
+
+**The question a playtest answers, which no gate can:** is that hour
+*pleasant*? If Act I reads as tedious, the design's own guidance is that it is
+too **long**, not too slow — the day budget, the wall and the ticket rate are
+all one constant each, and `--play` will re-tune around them.
+
+**What is not there yet.** Act II proper is M4. The Terminal is in
+*Applications* and everything the forms do goes through it, so you can already
+script by hand — but the ramp from clicking to scripting (the macro recorder,
+and a real interpreter on an emulated machine) is the next milestone and the
+whole bet.
 
 The org has forty people, fully provisioned across a directory, a mail server
 and a file server — all of it there before the player arrives, all of it
