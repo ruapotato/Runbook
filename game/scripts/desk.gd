@@ -447,7 +447,7 @@ func _menu_items(which: int) -> Array:
 			return [{"label": "Home Folder", "kind": "go:/root", "icon": "files"},
 					{"label": "Scripts", "kind": "go:/root/scripts", "icon": "editor"},
 					{"label": "Examples", "kind": "go:/root/examples", "icon": "manual"},
-					{"label": "P. Vane's home", "kind": "go:/home/pvane", "icon": "files"},
+					{"label": "Vane's notes", "kind": "go:/home/vane", "icon": "files"},
 					{"label": "", "kind": "", "icon": "app"},
 					{"label": "Computer", "kind": "go:/", "icon": "sysmon"}]
 		_:

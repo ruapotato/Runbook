@@ -69,8 +69,56 @@ static VmStatus n_do(VM *v, Value *a, int n, Value *out)
     (void)v; (void)n;
     if (!IS_STR(a[0])) { *out = VAL_NIL; return VM_OK; }
     i64 got = sysc(SYS_rbapi, (i64)AS_STR(a[0])->s, (i64)apibuf, (i64)sizeof apibuf);
-    if (got < 0) { *out = str_newz("-ERR no world attached\n"); return VM_OK; }
-    *out = str_new(apibuf, (size_t)got);
+    if (got < 0) { *out = str_newz("-ERR no world attached"); return VM_OK; }
+
+    /* THE ENVELOPE COMES OFF HERE, ONCE, instead of in every script.
+     *
+     * The wire format is a status line, then any body, then a lone dot. That
+     * is right for a protocol and wrong for a person: the first script
+     * anybody writes is `for line in lines(do("rooms"))`, and the first thing
+     * it printed was "+OK rooms" -- a line that is not a room, does not parse
+     * as one, and is entirely about plumbing they did not ask about.
+     *
+     * So: a command that answered with a body gives you the body. A command
+     * that just did something gives you what it said it did. An error gives
+     * you the error, with its marker left on so a script can test for it.
+     *
+     * A player should never have to know there was an envelope. */
+    size_t len = (size_t)got;
+    const char *p = apibuf;
+
+    size_t first = 0;
+    while (first < len && p[first] != '\n') first++;
+
+    if (len >= 4 && p[0] == '-' && p[1] == 'E') {
+        *out = str_new(p, first);          /* "-ERR why", one line */
+        return VM_OK;
+    }
+
+    size_t bstart = (first < len) ? first + 1 : len;
+    size_t bend = len;
+    /* Drop the terminating ".\n", and any trailing newline after it. */
+    while (bend > bstart && (p[bend - 1] == '\n' || p[bend - 1] == '\r')) bend--;
+    if (bend > bstart && p[bend - 1] == '.' &&
+        (bend - 1 == bstart || p[bend - 2] == '\n')) {
+        bend--;
+        while (bend > bstart && (p[bend - 1] == '\n' || p[bend - 1] == '\r')) bend--;
+    }
+
+    if (bend > bstart) {
+        *out = str_new(p + bstart, bend - bstart);
+        return VM_OK;
+    }
+
+    /* No body: the status line IS the answer. "+OK shields at 3, 0 spare"
+     * becomes "shields at 3, 0 spare", which is a sentence a script can
+     * print straight at somebody. */
+    size_t s = 0;
+    if (first >= 3 && p[0] == '+' && p[1] == 'O' && p[2] == 'K') {
+        s = 3;
+        while (s < first && p[s] == ' ') s++;
+    }
+    *out = str_new(p + s, first - s);
     return VM_OK;
 }
 
