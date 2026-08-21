@@ -149,8 +149,9 @@ int health_run(uint64_t seed, const char *specdir)
     check(w != NULL, "pristine org boots");
     if (!w) return 1;
     check(w->day == 0 && w->ms == 0, "the clock starts at day 0, minute 0");
-    check(w->nusers == RB_START_USERS, "the org opens at the Act I headcount");
-    check(w->active == RB_START_USERS, "every seeded user is active");
+    check(w->nusers == RB_START_USERS + RB_START_TICKETS, "the org opens at the Act I headcount");
+    check(w->active == RB_START_USERS + RB_START_TICKETS, "every seeded user is active");
+    check(w->open_count == RB_START_TICKETS, "and there is work on the desk from the first morning");
     check(w->ninst > 0, "the org has an appliance installed before the player arrives");
 
     Inst *dir = NULL;
@@ -176,9 +177,9 @@ int health_run(uint64_t seed, const char *specdir)
     Coll *ac = inst_coll(dir, "accounts");
     Coll *mc = inst_coll(dir, "memberships");
     Coll *gc = inst_coll(dir, "groups");
-    check(ac && ac->nr == w->nusers, "every person who was already here has an account");
+    check(ac && ac->nr == RB_START_USERS, "every person who was already here has an account");
     check(gc && gc->nr == RB_DEPT__N, "there is a group per department");
-    check(mc && mc->nr == w->nusers, "every seeded account is in its department's group");
+    check(mc && mc->nr == RB_START_USERS, "every seeded account is in its department's group");
 
     bool logins_ok = ac != NULL, refs_ok = ac != NULL;
     for (size_t i = 0; ac && i < ac->nr; i++) {
@@ -193,6 +194,7 @@ int health_run(uint64_t seed, const char *specdir)
     }
     check(logins_ok, "every account login is unique and non-empty");
     check(refs_ok, "every account points at a person who exists");
+    check(ac && ac->nr < w->nusers, "and this morning's arrivals have nothing at all yet");
 
     /* ---- and the org's own naming convention held. A directory that does
      * not follow the rule the in-game document states is a directory that

@@ -8,7 +8,11 @@ in this file that disagrees with it is stale, and the handoff wins.
 
 ## Where this is
 
-**M0–M2, M5, M6, M7.** The whole game, headless: an org that grows, tickets
+**M0–M3, M5, M6, M7.** The game, with a desktop on it.
+
+![the desktop](docs/desk.png)
+
+Everything headless: an org that grows, tickets
 that close only by state verification, three appliances driven from specs,
 exceptions that ramp, capacity and provisioning, and the vacation.
 
@@ -23,10 +27,41 @@ vacation: PASS  no service went over nominal capacity
 vacation: the company ran itself for 7 days. Go on holiday.
 ```
 
-Still missing: the Godot client (M3) and scripting on the emulated machine
-with the macro recorder (M4). Those are the two milestones that need a human
-at a keyboard — they answer *is Act I pleasant* and *does the relief land*,
-and no gate can answer either.
+Still missing: M4 — scripting on the emulated machine, and the macro recorder.
+That is the milestone that answers *does the relief land*, and no gate can
+answer it.
+
+## The desktop
+
+A MATE-shaped desktop environment, lifted in palette, icon set, font and
+window-manager behaviour from `~/NOMINAL/game/scripts/de.gd`, which had
+already been built and already been argued about.
+
+Applications / Places / System across the top, the in-game clock and the day
+budget in the notification area, a window list and workspace pager along the
+bottom, three-button decorations, free-floating windows you drag and resize.
+Places lists the appliances, discovered from the API — buy a second mail
+server and it appears in the menu.
+
+**Every appliance's web UI is generated** from its spec, themed per vendor
+(decision 6, §14). Veridian's is roomy and cool; Halcyon's is cramped and
+beige and answers in XML. There is no hand-built screen for any appliance, and
+`--health` refuses a form that offers a field its endpoint will not accept.
+
+**There is no Resolve button** and there is never going to be one. The queue
+has a Check button, which asks the world; every failing check says why.
+
+And there is Solitaire in the Applications menu, along with nine other things
+lifted whole from NOMINAL. Not a joke: every corporate desktop ever issued had
+those on it, and this game is won by **going on holiday**. The moment a player
+leaves a script running, opens Solitaire, and watches the queue empty itself
+in the window behind it is the moment the whole design is arguing for.
+
+```sh
+make gdext                                   # build the binding
+Godot_v4.7 --path game                       # play
+make client                                  # the client gate
+```
 
 The org has forty people, fully provisioned across a directory, a mail server
 and a file server — all of it there before the player arrives, all of it

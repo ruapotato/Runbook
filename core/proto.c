@@ -154,6 +154,7 @@ static void cmd_help(Buf *out)
         "appl.doc <instance|model>     the manual: every endpoint, every field\n"
         "appl.install <model>          stand up another one; costs 40 in-game minutes\n"
         "appl.forms <instance|model>   the web UI, as data\n"
+        "appl.endpoints <instance|model>  every endpoint, machine-readable\n"
         "api.call <instance> <endpoint> [field=value ...]\n"
         "form.submit <instance> <form> [field=value ...]\n"
         "quit\n"
@@ -397,6 +398,37 @@ bool proto_exec(Session *s, const char *line, Buf *out)
                 buf_putc(out, '\n');
             }
             for (int x = 0; x < e->nexample; x++) buf_printf(out, "  example: %s\n", e->example[x]);
+        }
+        buf_puts(out, ".\n");
+        return true;
+    }
+
+    /* THE ENDPOINTS, AS DATA, which is a different document from the manual.
+     *
+     * appl.doc is for a person: prose, examples, the failure modes spelled
+     * out. This is for a program -- one line per endpoint, every field named,
+     * machine-readable. Both are generated from the one spec, so they cannot
+     * disagree.
+     *
+     * It exists because the client needs it to render an appliance's browse
+     * views, and the moment it existed for the client it existed for the
+     * player's scripts too. That is the shape decision 7 keeps producing:
+     * anything the UI needs, everybody gets. */
+    if (!strcmp(cmd, "appl.endpoints")) {
+        if (argc < 2) { err(out, "appl.endpoints <instance|model>"); return true; }
+        Inst *in = world_inst(w, argv[1]);
+        const Model *m = in ? in->m : spec_model(w->specs, argv[1]);
+        if (!m) { err(out, "no such appliance or model: %s", argv[1]); return true; }
+        buf_puts(out, "+OK endpoints\n");
+        for (int i = 0; i < m->nep; i++) {
+            const Endpoint *e = &m->ep[i];
+            buf_printf(out, "{\"id\":\"%s\",\"op\":\"%s\",\"collection\":\"%s\",\"latency_ms\":%d,"
+                            "\"filter\":\"%s\",\"doc\":\"%s\",\"fields\":[",
+                       e->id, op_name(e->op), e->coll, e->latency_ms, e->filter, e->doc);
+            for (int f = 0; f < e->nfield; f++) buf_printf(out, "%s\"%s\"", f ? "," : "", e->field[f]);
+            buf_puts(out, "],\"required\":[");
+            for (int f = 0; f < e->nrequired; f++) buf_printf(out, "%s\"%s\"", f ? "," : "", e->required[f]);
+            buf_puts(out, "]}\n");
         }
         buf_puts(out, ".\n");
         return true;

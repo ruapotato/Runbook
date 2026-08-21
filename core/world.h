@@ -79,6 +79,14 @@ typedef struct {
 #define RB_WAVE_MIN        15
 #define RB_WAVE_MAX        40
 #define RB_START_USERS     40   /* Act I opens here (§5) */
+/* AND FOUR PEOPLE WAITING ON THEIR FIRST MORNING.
+ *
+ * §5 puts Act I's opening rate at four tickets a day, and a player who
+ * launches the game into an empty queue has to advance a day before anything
+ * happens -- which teaches them, in the first ten seconds, that the game is
+ * something that happens after you press a button. There is work on the desk
+ * when you sit down. There always is. */
+#define RB_START_TICKETS    4
 /* Chases per day, per ticket that is past its SLA, in thousandths. Handoff
  * §5: "unresolved tickets roll over and spawn follow-ups at 0.4x per day
  * unresolved. This is the compounding pressure." */

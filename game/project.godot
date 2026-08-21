@@ -1,0 +1,25 @@
+; RUNBOOK — the client.
+;
+; It is a client of the API (handoff decision 7). Everything on screen came
+; back from RunbookWorld.exec(), which is the same call a telnet session and
+; the reference agent make. There is no other way in, on purpose: it is what
+; makes "find the API" a discovery of something that was always underneath.
+
+config_version=5
+
+[application]
+
+config/name="RUNBOOK"
+run/main_scene="res://scenes/desk.tscn"
+config/features=PackedStringArray("4.4", "GL Compatibility")
+boot_splash/show_image=false
+
+[display]
+
+window/size/viewport_width=1280
+window/size/viewport_height=800
+window/stretch/mode="canvas_items"
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"

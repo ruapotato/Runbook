@@ -46,7 +46,7 @@ BIN = build/runbook
 # become the default and silently build the wrong thing.
 .DEFAULT_GOAL := all
 
-.PHONY: all check health mancheck play naive vacation determinism clean windows specs
+.PHONY: all check health mancheck play naive vacation client determinism clean windows specs gdext
 
 all: $(BIN)
 
@@ -72,7 +72,7 @@ build/spec.o: core/specbin.h
 # ---------------------------------------------------------------- the gates
 # M0's whole deliverable. Nothing else starts until these are green
 # (handoff §15).
-check: health mancheck play naive vacation determinism
+check: health mancheck play naive vacation client determinism
 
 health: $(BIN)
 	@./$(BIN) --health
@@ -98,6 +98,23 @@ vacation: $(BIN)
 
 determinism: $(BIN)
 	@./tools/check_determinism.sh
+
+# THE CLIENT (M3). Skips cleanly when there is no Godot on the box; the C
+# gates are the ones that must be green everywhere.
+client: gdext
+	@./tools/client_gate.sh
+
+# ------------------------------------------------------------------- gdext
+# The Godot binding. It links the SAME core the socket and every gate use, so
+# the desktop and a telnet session are two front ends onto one implementation
+# and cannot disagree.
+GDEXT_SO = game/bin/librunbook.linux.x86_64.so
+
+gdext: game/bin/librunbook.linux.x86_64.so
+
+game/bin/librunbook.linux.x86_64.so: $(CORE_SRC) gdext/runbook_gdext.c core/specbin.h
+	@mkdir -p game/bin
+	$(CC) $(CFLAGS) -Igdext -fPIC -shared $(CORE_SRC) gdext/runbook_gdext.c -o $@
 
 # ------------------------------------------------------------------ windows
 # Windows is a target, not a port (handoff §0). It is cross-built here so the

@@ -375,6 +375,20 @@ World *world_new(uint64_t seed, Specs *specs)
     }
 
     if (specs) seed_org(w);
+
+    /* The people who started this morning, and the tickets saying so. They
+     * are hired like anyone else and provisioned like nobody -- that is the
+     * job. Raised after the org is seeded so their logins collide against a
+     * directory that already has forty accounts in it. */
+    const TicketType *onboard = specs ? spec_ticket(specs, "user.onboard") : NULL;
+    for (int i = 0; onboard && i < RB_START_TICKETS; i++) {
+        const char *g = GIVEN[rng_range(&w->rng, 0, NGIVEN - 1)];
+        char f[RB_NAME_MAX];
+        family_name((size_t)rng_range(&w->rng, 0, NFAMILY - 1), f, sizeof f);
+        uint8_t d = (uint8_t)rng_range(&w->rng, 0, RB_DEPT__N - 1);
+        User *u = world_user_add(w, PROV_SEED, g, f, d);
+        if (u) world_ticket_exception(w, world_ticket_new(w, onboard, u->id));
+    }
     return w;
 }
 
