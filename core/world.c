@@ -228,9 +228,29 @@ Inst *world_install(World *w, const char *model_id, Prov prov)
     snprintf(id, sizeof id, "%s_%02d", m->kind, n);
 
     Inst *in = inst_new(w, m, v, id);
+    /* A new box comes up with the org's reference data on it. See the note on
+     * CollSpec.replicated: the alternative is config management, and that is
+     * the sequel. */
+    for (size_t i = 0; i < w->ninst; i++)
+        if (!strcmp(w->inst[i]->m->kind, m->kind)) { appl_replicate(in, w->inst[i]); break; }
     w->inst = rb_realloc(w->inst, (w->ninst + 1) * sizeof *w->inst);
     w->inst[w->ninst++] = in;
     return in;
+}
+
+/* Reference data goes on every instance of the kind, or the player's script
+ * has to care which directory server it happened to ask. */
+Rec *world_replicated_add(World *w, const char *kind, const char *coll, Prov prov)
+{
+    Rec *first = NULL;
+    for (size_t i = 0; i < w->ninst; i++) {
+        if (strcmp(w->inst[i]->m->kind, kind)) continue;
+        Coll *c = inst_coll(w->inst[i], coll);
+        if (!c) continue;
+        Rec *r = coll_insert(c, prov, w->day);
+        if (!first) first = r;
+    }
+    return first;
 }
 
 /* ------------------------------------------------------------------ boot */
@@ -455,6 +475,10 @@ int world_day_advance(World *w)
          * this one line. */
         if (u && onboard) world_ticket_exception(w, world_ticket_new(w, onboard, u->id));
     }
+
+    /* ---- has anything run out of room? Before the chasing, so a capacity
+     * ticket raised today is not also chased today. */
+    world_ticket_capacity(w);
 
     /* ---- and the chasing, last, so today's arrivals are not chased on the
      * day they arrive. */

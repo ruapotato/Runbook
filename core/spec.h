@@ -75,6 +75,44 @@ typedef struct {
      * reuses it reads somebody else's mail. Offboarding is unforgiving of
      * records that were never written (handoff §6); this is where that starts. */
     bool   reuse_key;
+    /* Reference data, present on every instance of the kind.
+     *
+     * Groups and shares are the org's, not one appliance's. When a second
+     * directory server is racked it comes up with the same department groups
+     * on it, because that is what happens -- and because the alternative is
+     * making the player configure each new instance by hand, which is CONFIG
+     * MANAGEMENT, which handoff decision 11 puts firmly in the sequel.
+     *
+     * Accounts, mailboxes, home folders and grants are not replicated: those
+     * live where they were put, and where to put them is the Act III
+     * decision. */
+    bool   replicated;
+    /* ONE EXTRA INDEXED FIELD, and exactly one.
+     *
+     * Accounts are keyed by login, but the thing that asks about them most
+     * often is an acceptance check looking for "the account belonging to this
+     * person" -- by user_ref, which is not the key. That is a linear scan,
+     * and at 6,000 accounts and 7,000 tickets it was the difference between
+     * a gate that takes 77 seconds and one that takes four.
+     *
+     * One, not a general secondary-index facility, because one is what the
+     * content needs and a facility nobody uses is a facility that rots. If a
+     * second appliance ever wants two, this becomes an array and the code
+     * below barely changes. */
+    char   index_field[RB_NAME_MAX];
+    /* WHERE THE KEY HAS TO BE UNIQUE: this appliance, or the whole service.
+     *
+     * You can shard storage. You cannot shard names. A mailbox lives on one
+     * mail server and it is perfectly sensible to spread them over six; an
+     * ADDRESS is unique across the company, and so is a directory login,
+     * because they are identity rather than storage.
+     *
+     * Without this, an Act III estate quietly grows two accounts with the
+     * same login on different directory servers -- and since acceptance
+     * checks search the whole service, the person ends up with an account
+     * that exists, an account that works, and they are not the same account.
+     * That is not a puzzle, it is a bug that looks like one. */
+    bool   service_scope;
 } CollSpec;
 
 /* ------------------------------------------------------------- endpoints */

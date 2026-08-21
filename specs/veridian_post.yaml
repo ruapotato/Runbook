@@ -15,6 +15,7 @@ doc: "Mail. One mailbox per account, plus whatever aliases the department has ta
 state:
   mailboxes:
     key: [login]
+    scope: service       # identity, not storage; see spec.h
     reuse_key: no          # mail is not reassigned; see spec.h
     fields: [login, address, quota_mb, status]
   aliases:

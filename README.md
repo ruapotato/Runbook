@@ -8,9 +8,25 @@ in this file that disagrees with it is stale, and the handoff wins.
 
 ## Where this is
 
-**M2, and most of M5.** Tickets, acceptance, three appliances, and the
-balance harness. No client yet — and per handoff §15 that is the order: *the
-game should be provably playable headless before it is visible.* It is.
+**M0–M2, M5, M6, M7.** The whole game, headless: an org that grows, tickets
+that close only by state verification, three appliances driven from specs,
+exceptions that ramp, capacity and provisioning, and the vacation.
+
+`make check` runs six gates in about eight seconds, and the last of them is
+the win condition:
+
+```
+vacation: 7 days, 4197 users, nobody watching. Day 77.
+vacation: PASS  100% of tickets resolved within SLA (want 99%)
+vacation: PASS  queue 0 deep at the start, 0 at the end
+vacation: PASS  no service went over nominal capacity
+vacation: the company ran itself for 7 days. Go on holiday.
+```
+
+Still missing: the Godot client (M3) and scripting on the emulated machine
+with the macro recorder (M4). Those are the two milestones that need a human
+at a keyboard — they answer *is Act I pleasant* and *does the relief land*,
+and no gate can answer either.
 
 The org has forty people, fully provisioned across a directory, a mail server
 and a file server — all of it there before the player arrives, all of it
@@ -76,7 +92,7 @@ line, so a dumb client can find the end without parsing the body.
 | `--mancheck` | Every example in every generated manual executes against a live world; every endpoint is documented | live |
 | `--play` | A reference agent plays through the acts over the API, and must keep up: ≤2% of tickets failed, ≥95% within SLA. Reports per-act wall time and where it stalled | live |
 | `--naive-gate` | §8's degeneracy band, over three seeds: a bot that does not branch must fail ≤5% of tickets at the Act I wall and ≥35% by the end of Act II | live |
-| `--vacation N` | N days, zero input, against §12 | M7 |
+| `--vacation N` | The win condition: N simulated days at 4,000 users with nobody watching — ≥99% within SLA, queue no deeper at the end, no service over nominal for more than 30 in-game minutes. Failing is diagnostic: it names the ticket types your systems did not handle and the service that fell over | live |
 
 `--health` prints `PENDING` lines for the parts of its handoff definition that
 have nothing to check yet. That is on purpose: a check with nothing to check
@@ -161,6 +177,22 @@ and that is caught at startup rather than in a playtest.
 `{account.login}` is bound by an earlier check, which is how acceptance can
 verify work whose exact shape was the player's decision. A check that does not
 apply reports `n/a`, never `PASS`.
+
+## Act III
+
+Past about 600 users per appliance an instance goes over nominal and every
+call to it gets slower in proportion — and slow calls eat the day budget,
+which is the only currency in the game. The world raises a `service.capacity`
+ticket; `appl.install` racks another box, and it costs forty in-game minutes
+whether a person or a script asks for it.
+
+**Placement and replica count are the decisions, and there is no cabling.**
+Nothing else scales: acceptance checks search the whole service rather than a
+named appliance, so where you put things is yours to get right. Reference data
+(groups, shares) replicates to every instance, because making the player
+configure each new box is config management and that is the sequel. Identity
+does not shard — `scope: service` on a collection means its key must be free
+across every instance, since you can shard storage but never names.
 
 ## What M3 does next
 

@@ -37,6 +37,20 @@ typedef enum {
      * own kind rather than expressed as a comparison because the convention
      * lives in the model and must not be duplicated into content. */
     CHK_CONVENTION,
+    /* Every instance of an appliance kind, taken together, has enough
+     * capacity for what it is holding. The Act III task (§6, "capacity
+     * expansion"): things are slow, stand up another one.
+     *
+     * AGGREGATE, NOT PER INSTANCE, and that is a design decision rather than
+     * a convenience. Per-instance would mean the only way to close the ticket
+     * is to move records off a full appliance, which is a migration -- and
+     * migrations are M6's OTHER ticket, where they belong. Aggregate means
+     * the fix is "buy another one", which is the actual decision, and the
+     * punishment for then dumping all the new work on the old instance is
+     * latency: it gets slower in proportion to how far over nominal it is,
+     * and slow calls eat the day budget. Placement is a real choice with a
+     * real cost and no ticket has to nag about it. */
+    CHK_CAPACITY,
     CHK__N
 } CheckKind;
 
@@ -50,6 +64,7 @@ typedef struct {
     char      bind[RB_NAME_MAX];        /* name the found record for later checks */
     char      field[RB_NAME_MAX];       /* CHK_EQUALS, CHK_CONVENTION */
     char      value[RB_VAL_MAX];        /* CHK_EQUALS */
+    int       max_pct;                  /* CHK_CAPACITY */
     /* CONDITIONAL CHECKS, and why they are not a vacuous pass.
      *
      * `when: also_dept` means the check applies only to tickets that carry an
@@ -129,6 +144,8 @@ int     world_ticket_sweep(World *w);
  * Called from world_day_advance() after the sweep, so nobody is chased for
  * work that was finished yesterday. */
 void    world_ticket_day(World *w);
+/* Raise a capacity ticket for any appliance kind that has run out of room. */
+void    world_ticket_capacity(World *w);
 void    world_ticket_stats(const World *w, Buf *out);
 
 /* Evaluate every acceptance check. Free of in-game cost, on purpose: knowing

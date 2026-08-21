@@ -83,6 +83,14 @@ typedef struct {
  * §5: "unresolved tickets roll over and spawn follow-ups at 0.4x per day
  * unresolved. This is the compounding pressure." */
 #define RB_FOLLOWUP_MILLI 400
+/* At what aggregate load a service starts complaining. Below the 85% the
+ * ticket's acceptance demands, so that closing one buys real headroom instead
+ * of leaving the player one hire away from the next. */
+#define RB_CAPACITY_WARN_PCT 90
+/* What it costs to stand up a new appliance instance, by hand. Handoff §5:
+ * "provisioning a new instance by hand costs 40 in-game minutes, which does
+ * not fit in a day at this volume, so it must be scripted." */
+#define RB_INSTALL_MINUTES 40
 
 /* ---------------------------------------------------------------- world */
 struct World {

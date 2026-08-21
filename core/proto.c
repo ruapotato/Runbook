@@ -152,6 +152,7 @@ static void cmd_help(Buf *out)
         "appl.list                     appliances installed in this org\n"
         "appl.info <instance>          one appliance: load, record counts\n"
         "appl.doc <instance|model>     the manual: every endpoint, every field\n"
+        "appl.install <model>          stand up another one; costs 40 in-game minutes\n"
         "appl.forms <instance|model>   the web UI, as data\n"
         "api.call <instance> <endpoint> [field=value ...]\n"
         "form.submit <instance> <form> [field=value ...]\n"
@@ -260,8 +261,11 @@ bool proto_exec(Session *s, const char *line, Buf *out)
 
     if (!strcmp(cmd, "ticket.get")) {
         if (argc < 2) { err(out, "ticket.get <id>"); return true; }
-        world_ticket_sweep(w);
         Ticket *t = world_ticket_find(w, argv[1]);
+        /* This one ticket, not the whole queue. Reading one ticket used to
+         * settle all of them, which at Act III volumes meant every glance at
+         * a ticket re-evaluated three hundred others. */
+        if (t) ticket_settle(w, t);
         if (!t) { err(out, "no such ticket: %s", argv[1]); return true; }
         buf_puts(out, "+OK ticket\n");
         ticket_render(w, t, out);
@@ -281,7 +285,7 @@ bool proto_exec(Session *s, const char *line, Buf *out)
         if (!t) { err(out, "no such ticket: %s", argv[1]); return true; }
         Verdict v;
         ticket_evaluate(w, t, &v);
-        if (v.all) world_ticket_sweep(w);
+        if (v.all) ticket_settle(w, t);
         buf_printf(out, "+OK %s %s\n", t->id, v.all ? "passes" : "does not pass yet");
         for (int i = 0; i < v.n; i++) {
             /* n/a, never PASS. A check that did not apply has proved nothing,
@@ -429,6 +433,24 @@ bool proto_exec(Session *s, const char *line, Buf *out)
                        m->has_api ? "true" : "false", v->cost);
         }
         buf_puts(out, ".\n");
+        return true;
+    }
+
+    /* BUYING ANOTHER ONE. The Act III verb.
+     *
+     * It costs forty in-game minutes whoever calls it, script or not, because
+     * what takes the time is racking and configuring the thing rather than
+     * typing the command. At Act I volumes that is an afternoon and fine; at
+     * four thousand users the arithmetic stops working and it has to happen
+     * while you are asleep. */
+    if (!strcmp(cmd, "appl.install")) {
+        if (argc < 2) { err(out, "appl.install <model>  (see 'models')"); return true; }
+        Inst *in = world_install(w, argv[1], s->prov);
+        if (!in) { err(out, "%s", w->err); return true; }
+        world_spend_ms(w, RB_INSTALL_MINUTES * 60000);
+        buf_printf(out, "+OK installed, %d minutes\n", RB_INSTALL_MINUTES);
+        inst_render(in, out);
+        buf_puts(out, "\n.\n");
         return true;
     }
 

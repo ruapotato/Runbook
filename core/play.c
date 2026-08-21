@@ -142,6 +142,86 @@ static bool ex_retry(Agent *a, int tries, const char *fmt, ...)
     return false;
 }
 
+/* ------------------------------------------------- placement, in Act III
+ *
+ * Handoff §5: "placement and replica count are the decisions; there is no
+ * cabling." This is both of them, and they are three lines each.
+ *
+ * The agent keeps a current instance per appliance kind and moves to the
+ * least loaded one whenever it looks. It does NOT migrate anything: an
+ * appliance that is full stops receiving new work and stays where it is,
+ * which is what the aggregate capacity check is designed to allow (see
+ * ticket.h). The cost of getting this wrong is not a ticket -- it is
+ * latency, and latency is the day budget, and the day budget is the game. */
+#define KINDS 3
+static const char *const KIND[KINDS] = { "directory", "mail", "fileserver" };
+static const char *const KIND_MODEL[KINDS] = { "veridian_dx", "veridian_post", "halcyon_fs9" };
+
+/* NOT ONE INSTANCE PER KIND -- ALL OF THEM, plus which is emptiest.
+ *
+ * The first version kept only the least-loaded instance of each kind and
+ * treated it as "the directory". That works right up until there are two
+ * directory servers, and then it is wrong in a way that takes a while to see:
+ * a returning contractor's old account is on directory_01, the agent looks
+ * for it on directory_04, does not find it, and creates a SECOND account with
+ * the same login on a different box. Both exist. The acceptance check, which
+ * searches the whole service rather than one appliance, finds the old one and
+ * says the person is still a contractor.
+ *
+ * The service is the union of its instances. A script that has learned that
+ * is a script that has understood Act III; one that has not gets six of seven
+ * checks and a person who cannot log in. */
+#define MAX_INST 24
+typedef struct {
+    char id[KINDS][MAX_INST][RB_ID_MAX];
+    int  n[KINDS];
+    int  best[KINDS];          /* index of the emptiest */
+    int  best_load[KINDS];
+} Placement;
+
+static void place(Agent *a, Placement *pl)
+{
+    ex(a, "appl.list");
+    for (int k = 0; k < KINDS; k++) {
+        int best = 1000;
+        pl->n[k] = 0;
+        pl->best[k] = 0;
+        pl->best_load[k] = 0;
+        for (const char *p = a->out.p; p && *p; ) {
+            const char *nl = strchr(p, '\n');
+            size_t len = nl ? (size_t)(nl - p) : strlen(p);
+            if (len && *p == '{') {
+                Buf one;
+                buf_init(&one);
+                buf_put(&one, p, len);
+                char kind[RB_NAME_MAX] = "", id[RB_ID_MAX] = "";
+                if (json_str(&one, "kind", kind, sizeof kind) && !strcmp(kind, KIND[k]) &&
+                    json_str(&one, "id", id, sizeof id) && pl->n[k] < MAX_INST) {
+                    const char *lp = strstr(one.p, "\"load_pct\":");
+                    int load = lp ? atoi(lp + 11) : 0;
+                    snprintf(pl->id[k][pl->n[k]], RB_ID_MAX, "%s", id);
+                    if (load < best) { best = load; pl->best[k] = pl->n[k]; pl->best_load[k] = load; }
+                    pl->n[k]++;
+                }
+                buf_free(&one);
+            }
+            if (!nl) break;
+            p = nl + 1;
+        }
+    }
+}
+
+/* The first instance of the kind is the fallback, and it always exists: the
+ * pristine org boots with one of each (see world.c). If that ever stops being
+ * true, --health's "the org has an appliance installed" check fails first. */
+static const char *where(const Placement *pl, int k)
+{
+    static char fallback[KINDS][RB_ID_MAX];
+    if (pl->n[k]) return pl->id[k][pl->best[k]];
+    snprintf(fallback[k], RB_ID_MAX, "%s_01", KIND[k]);
+    return fallback[k];
+}
+
 /* ------------------------------------------------------ the careful agent */
 /* The org's login convention, in the agent, because the player has to write
  * it themselves. The game does not hand it over — this is a reimplementation
@@ -161,7 +241,23 @@ static void convention(const char *given, const char *family, char *out, size_t 
     snprintf(out, cap, "%s", base);
 }
 
-static bool onboard_careful(Agent *a, const char *ticket_id, const char *subject)
+/* Find an account by login anywhere in the directory service. Returns the
+ * instance it is on, or NULL, and fills in who it belongs to. */
+static const char *find_account(Agent *a, const Placement *pl, const char *login,
+                                char *user_ref, size_t urcap, char *status, size_t stcap)
+{
+    for (int i = 0; i < pl->n[0]; i++) {
+        ex(a, "api.call %s get_account login=%s", pl->id[0][i], login);
+        if (answer_status(&a->out) == RB_OK && answer_ok(&a->out)) {
+            if (user_ref) json_str(&a->out, "user_ref", user_ref, urcap);
+            if (status)   json_str(&a->out, "status", status, stcap);
+            return pl->id[0][i];
+        }
+    }
+    return NULL;
+}
+
+static bool onboard_careful(Agent *a, const Placement *pl, const char *ticket_id, const char *subject)
 {
     /* READ THE TICKET'S FIELDS, ALL OF THEM.
      *
@@ -189,48 +285,55 @@ static bool onboard_careful(Agent *a, const char *ticket_id, const char *subject
     char base[RB_NAME_MAX], login[RB_VAL_MAX];
     convention(given, family, base, sizeof base);
     snprintf(login, sizeof login, "%s", base);
-    for (int suffix = 2; suffix < 100; suffix++) {
-        ex(a, "api.call directory_01 get_account login=%s", login);
-        if (answer_status(&a->out) == RB_NOT_FOUND) break;
-        if (!answer_ok(&a->out) && answer_status(&a->out) != RB_OK) break;
-        /* Taken — but by whom? If it is this very person, we already did the
-         * work and are looking at a retry of our own batch. */
-        char who[RB_ID_MAX] = "";
-        json_str(&a->out, "user_ref", who, sizeof who);
-        if (!strcmp(who, subject)) break;
-        snprintf(login, sizeof login, "%s%d", base, suffix);
-    }
 
-    if (!ex_retry(a, 4, "api.call directory_01 create_account login=%s user_ref=%s display_name=%s_%s dept=%s status=active",
-                  login, subject, given, family, dept)) {
+    /* LOOK FIRST, ACROSS THE WHOLE SERVICE. The convention gives a login; the
+     * directory decides whether it is free. Exception class 1 (handoff §8): a
+     * name collision, or a new hire who is already in the system as a
+     * contractor. Which instance the answer is on matters -- memberships
+     * reference the account on their own appliance, so everything that
+     * follows has to happen where the account actually is. */
+    const char *dir = NULL;
+    char status[RB_NAME_MAX] = "";
+    for (int suffix = 2; suffix < 100; suffix++) {
+        char who[RB_ID_MAX] = "";
+        const char *on = find_account(a, pl, login, who, sizeof who, status, sizeof status);
+        if (!on) break;                       /* free */
+        if (!strcmp(who, subject)) { dir = on; break; }   /* already theirs */
+        snprintf(login, sizeof login, "%s%d", base, suffix);
+        status[0] = 0;
+    }
+    if (!dir) dir = where(pl, 0);             /* a new account goes on the emptiest */
+
+    if (!ex_retry(a, 4, "api.call %s create_account login=%s user_ref=%s display_name=%s_%s dept=%s status=active",
+                  dir, login, subject, given, family, dept)) {
         /* THE WRITE THAT COMMITTED AND THEN TIMED OUT (§10). Retrying is not
          * enough on its own, because the retry may be the duplicate. The
          * endpoint is idempotent on login, so the retry is safe — and this
          * check is what tells us it landed. */
-        ex(a, "api.call directory_01 get_account login=%s", login);
+        ex(a, "api.call %s get_account login=%s", dir, login);
         if (!answer_ok(&a->out)) return false;
     }
     /* RECONCILE, DO NOT ASSUME. Idempotency got the account there; it did not
      * make it right. A returning contractor's account already existed, and
      * the create that "succeeded" returned it untouched with its old status
      * on it. This is the lesson idempotency alone does not teach. */
-    ex(a, "api.call directory_01 get_account login=%s", login);
-    char status[RB_NAME_MAX] = "";
+    ex(a, "api.call %s get_account login=%s", dir, login);
+    status[0] = 0;
     json_str(&a->out, "status", status, sizeof status);
     if (strcmp(status, "active"))
-        if (!ex_retry(a, 4, "api.call directory_01 update_account login=%s status=active dept=%s", login, dept))
+        if (!ex_retry(a, 4, "api.call %s update_account login=%s status=active dept=%s", dir, login, dept))
             return false;
 
-    if (!ex_retry(a, 4, "api.call directory_01 add_member login=%s group=dept-%s", login, dept)) return false;
-    if (also_dept[0] && !ex_retry(a, 4, "api.call directory_01 add_member login=%s group=dept-%s", login, also_dept))
+    if (!ex_retry(a, 4, "api.call %s add_member login=%s group=dept-%s", dir, login, dept)) return false;
+    if (also_dept[0] && !ex_retry(a, 4, "api.call %s add_member login=%s group=dept-%s", dir, login, also_dept))
         return false;
-    if (!ex_retry(a, 4, "api.call mail_01 create_mailbox login=%s address=%s@harbrook.example quota_mb=2048 status=active",
-                  login, login)) {
-        ex(a, "api.call mail_01 get_mailbox login=%s", login);
+    if (!ex_retry(a, 4, "api.call %s create_mailbox login=%s address=%s@harbrook.example quota_mb=2048 status=active",
+                  where(pl, 1), login, login)) {
+        ex(a, "api.call %s get_mailbox login=%s", where(pl, 1), login);
         if (!answer_ok(&a->out)) return false;
     }
-    if (!ex_retry(a, 5, "api.call fileserver_01 create_home login=%s path=/home/%s quota_mb=8192", login, login)) {
-        ex(a, "api.call fileserver_01 get_home login=%s", login);
+    if (!ex_retry(a, 5, "api.call %s create_home login=%s path=/home/%s quota_mb=8192", where(pl, 2), login, login)) {
+        ex(a, "api.call %s get_home login=%s", where(pl, 2), login);
         if (!answer_ok(&a->out)) return false;
     }
     char sharename[RB_VAL_MAX];
@@ -240,12 +343,15 @@ static bool onboard_careful(Agent *a, const char *ticket_id, const char *subject
      * none. Not a special case in the script -- a field with a fallback,
      * which is what it will always look like once the player stops treating
      * the exception as an exception. */
-    if (!ex_retry(a, 5, "api.call fileserver_01 grant_share login=%s share=%s access=rw",
-                  login, sharename)) return false;
+    if (!ex_retry(a, 5, "api.call %s grant_share login=%s share=%s access=rw",
+                  where(pl, 2), login, sharename)) return false;
 
     /* And ask the game, which is the only opinion that counts. */
     ex(a, "ticket.check %s", ticket_id);
-    return a->out.p && strstr(a->out.p, "passes") != NULL;
+    bool passed = a->out.p && strstr(a->out.p, "passes") != NULL;
+    if (!passed && getenv("RUNBOOK_PLAY_DEBUG"))
+        fprintf(stderr, "DEBUG careful %s login=%s\n%s\n", ticket_id, login, a->out.p ? a->out.p : "");
+    return passed;
 }
 
 /* -------------------------------------------------------- the naive agent */
@@ -253,7 +359,7 @@ static bool onboard_careful(Agent *a, const char *ticket_id, const char *subject
  * verification. Exactly the bot §8 says must fail a rising fraction of
  * tickets. It is not a strawman: it is what a competent programmer writes on
  * their first pass, before the world has taught them otherwise. */
-static bool onboard_naive(Agent *a, const char *ticket_id, const char *subject)
+static bool onboard_naive(Agent *a, const Placement *pl, const char *ticket_id, const char *subject)
 {
     char given[RB_NAME_MAX] = "", family[RB_NAME_MAX] = "", dept[RB_NAME_MAX] = "";
     ex(a, "user.get %s", subject);
@@ -264,17 +370,119 @@ static bool onboard_naive(Agent *a, const char *ticket_id, const char *subject)
     char login[RB_VAL_MAX];
     convention(given, family, login, sizeof login);
 
-    ex(a, "api.call directory_01 create_account login=%s user_ref=%s display_name=%s_%s dept=%s status=active",
-       login, subject, given, family, dept);
-    ex(a, "api.call directory_01 add_member login=%s group=dept-%s", login, dept);
-    ex(a, "api.call mail_01 create_mailbox login=%s address=%s@harbrook.example quota_mb=2048 status=active", login, login);
-    ex(a, "api.call fileserver_01 create_home login=%s path=/home/%s quota_mb=8192", login, login);
-    ex(a, "api.call fileserver_01 grant_share login=%s share=share-%s access=rw", login, dept);
+    ex(a, "api.call %s create_account login=%s user_ref=%s display_name=%s_%s dept=%s status=active",
+       where(pl, 0), login, subject, given, family, dept);
+    ex(a, "api.call %s add_member login=%s group=dept-%s", where(pl, 0), login, dept);
+    ex(a, "api.call %s create_mailbox login=%s address=%s@harbrook.example quota_mb=2048 status=active", where(pl, 1), login, login);
+    ex(a, "api.call %s create_home login=%s path=/home/%s quota_mb=8192", where(pl, 2), login, login);
+    ex(a, "api.call %s grant_share login=%s share=share-%s access=rw", where(pl, 2), login, dept);
 
     ex(a, "ticket.check %s", ticket_id);
     if (getenv("RUNBOOK_PLAY_DEBUG") && !(a->out.p && strstr(a->out.p, "passes")))
         fprintf(stderr, "DEBUG naive %s/%s login=%s\n%s\n", ticket_id, subject, login, a->out.p ? a->out.p : "");
     return a->out.p && strstr(a->out.p, "passes") != NULL;
+}
+
+/* AND LOOK AGAIN AS THE DAY GOES ON.
+ *
+ * Placement decided once a morning sends every one of the day's three hundred
+ * new accounts to whichever box was emptiest at nine o'clock -- which fills
+ * it to 119% of nominal by teatime while nine others sit half empty. The
+ * emptiest appliance stops being the emptiest as soon as you start using it.
+ * Looking every thirty-two tickets costs nothing (appl.list is free) and
+ * keeps the estate level. */
+#define REPLACE_EVERY 32
+
+/* ------------------------------------------------------- capacity tickets
+ *
+ * The whole of Act III's new work, and it is six lines, which is the point.
+ * The hard part of scaling here is not the command -- it is that the command
+ * costs forty in-game minutes and there is no longer a forty-minute hole in
+ * the day. */
+static const char *model_for(const char *kind)
+{
+    for (int k = 0; k < KINDS; k++) if (!strcmp(KIND[k], kind)) return KIND_MODEL[k];
+    return NULL;
+}
+
+static bool capacity_careful(Agent *a, const char *ticket_id, const char *kind)
+{
+    const char *model = model_for(kind);
+    if (!model) {
+        /* An appliance kind this agent was never taught about. Say so rather
+         * than failing silently -- when M8 adds vendors, this is the line
+         * that will tell somebody the reference agent needs updating. */
+        fprintf(stderr, "play: no model known for appliance kind '%s'\n", kind);
+        return false;
+    }
+    /* ONE BOX MAY NOT BE ENOUGH. If the org outgrew the estate by more than a
+     * single appliance's worth -- which happens after a hiring wave, or after
+     * a few days when nobody was watching -- installing one and declaring
+     * victory leaves the ticket open and the service still full. Keep buying
+     * until the acceptance check is satisfied, and stop at four so a bug in
+     * the check cannot spend the whole day racking hardware. */
+    for (int i = 0; i < 4; i++) {
+        ex(a, "appl.install %s", model);
+        if (!answer_ok(&a->out)) return false;
+        ex(a, "ticket.check %s", ticket_id);
+        if (a->out.p && strstr(a->out.p, "passes")) return true;
+    }
+    return false;
+}
+
+/* AND BUY BEFORE THE TICKET, which is what separates a system from a script.
+ *
+ * The capacity ticket fires at 90% of nominal. A company growing at 6% a day
+ * goes from 90% to over 100% overnight, so a system that waits to be asked
+ * spends every night degraded -- and §12 allows a service to be over nominal
+ * for thirty in-game minutes, not for a night. Watching the emptiest instance
+ * and racking another at 80% costs forty minutes and keeps everything under
+ * nominal, which is the whole job. */
+static void capacity_ahead(Agent *a, Placement *pl)
+{
+    for (int k = 0; k < KINDS; k++) {
+        if (!pl->n[k] || pl->best_load[k] <= 80) continue;
+        const char *model = model_for(KIND[k]);
+        if (!model) continue;
+        ex(a, "appl.install %s", model);
+        place(a, pl);
+    }
+}
+
+/* ---------------------------------------------------------- THE VACATION
+ *
+ * Handoff §12, and the win condition: seven simulated days, zero player
+ * input, at 4,000 users.
+ *
+ *   - at least 99% of tickets resolved within SLA
+ *   - queue depth at the end no greater than at the start
+ *   - no service below its capacity threshold for more than 30 consecutive
+ *     in-game minutes
+ *
+ * The player triggers it voluntarily and can abort. FAILING IT IS DIAGNOSTIC,
+ * NOT FATAL (§12): the report says which ticket types went unhandled and
+ * which service fell over, and the player goes back and fixes their systems.
+ * That is the endgame loop, and it is the reason there is no fail screen
+ * anywhere in this game.
+ *
+ * Headless, the reference agent stands in for the systems the player built.
+ * That is not a cheat -- it is the definition. The vacation asks whether the
+ * automation that exists can run the company without anybody watching, and
+ * here the automation that exists is this file. */
+typedef struct {
+    int  open_start, open_end;
+    int  within_pct;
+    int  degraded_minutes;      /* longest run of a service over nominal */
+    char worst_service[RB_ID_MAX];
+    int  worst_load;
+    char unhandled[8][RB_NAME_MAX];
+    int  nunhandled;
+} Vacation;
+
+static void vacation_note_unhandled(Vacation *v, const char *type)
+{
+    for (int i = 0; i < v->nunhandled; i++) if (!strcmp(v->unhandled[i], type)) return;
+    if (v->nunhandled < 8) snprintf(v->unhandled[v->nunhandled++], RB_NAME_MAX, "%s", type);
 }
 
 /* -------------------------------------------------------------- the acts */
@@ -404,11 +612,19 @@ static int play_once(uint64_t seed, const char *specdir, int days, bool naive, b
 #define PLAY_BATCH 8192
     char (*tids)[RB_ID_MAX] = rb_alloc(PLAY_BATCH * RB_ID_MAX);
     char (*refs)[RB_ID_MAX] = rb_alloc(PLAY_BATCH * RB_ID_MAX);
+    char (*types)[RB_NAME_MAX] = rb_alloc(PLAY_BATCH * RB_NAME_MAX);
     bool  *chase = rb_alloc(PLAY_BATCH * sizeof *chase);
 
     for (int d = 0; d < days; d++) {
         int32_t today = a.w->day;
         int n = 0;
+
+        /* Look at where things are before deciding where to put anything.
+         * Once a day is enough: capacity moves slowly, and asking more often
+         * would be a script doing work to feel busy. */
+        Placement pl;
+        place(&a, &pl);
+        if (!naive) capacity_ahead(&a, &pl);
 
         ex(&a, "ticket.list open %d", PLAY_BATCH);
         for (const char *p = a.out.p; p && *p && n < PLAY_BATCH; ) {
@@ -420,6 +636,7 @@ static int play_once(uint64_t seed, const char *specdir, int days, bool naive, b
                 buf_put(&one, p, len);
                 if (json_str(&one, "id", tids[n], RB_ID_MAX) &&
                     json_str(&one, "ref", refs[n], RB_ID_MAX)) {
+                    json_str(&one, "type", types[n], RB_NAME_MAX);
                     /* A chase is the same work asked about again; it counts
                      * toward the queue the agent has to get through, not
                      * toward the work it was measured on. */
@@ -440,20 +657,29 @@ static int play_once(uint64_t seed, const char *specdir, int days, bool naive, b
                 else if (a.w->active >= GATE_HI_MIN && a.w->active <= GATE_HI_MAX) band = &hi;
             }
             bool ok;
-            if (band) {
+            if (!strcmp(types[i], "service.capacity")) {
+                /* Both agents buy hardware. The naive one is naive about
+                 * onboarding, not about arithmetic, and a bot that let the
+                 * whole estate fill up would be failing for a reason §8 is
+                 * not asking about. */
+                ok = capacity_careful(&a, tids[i], refs[i]);
+                place(&a, &pl);          /* a new appliance changes where work goes */
+                band = NULL;
+            } else if (band) {
                 /* Score the naive strategy, then repair with the careful one
                  * so the org the next sample sees is a healthy one. */
-                ok = onboard_naive(&a, tids[i], refs[i]);
+                ok = onboard_naive(&a, &pl, tids[i], refs[i]);
                 band->seen++;
-                if (!ok) { band->failed++; ok = onboard_careful(&a, tids[i], refs[i]); }
+                if (!ok) { band->failed++; ok = onboard_careful(&a, &pl, tids[i], refs[i]); }
             } else {
-                ok = naive ? onboard_naive(&a, tids[i], refs[i])
-                           : onboard_careful(&a, tids[i], refs[i]);
+                ok = naive ? onboard_naive(&a, &pl, tids[i], refs[i])
+                           : onboard_careful(&a, &pl, tids[i], refs[i]);
             }
             if (first) {
                 attempted++; act_attempted++;
                 if (!ok) { failed++; act_failed++; }
             }
+            if (!naive && (i + 1) % REPLACE_EVERY == 0) { place(&a, &pl); capacity_ahead(&a, &pl); }
         }
         if (a.w->day == today) world_day_advance(a.w);
 
@@ -468,10 +694,21 @@ static int play_once(uint64_t seed, const char *specdir, int days, bool naive, b
             act_day0 = a.w->day;
             act_attempted = act_failed = 0;
         }
-        /* WHERE IT STALLED, which is the other half of what §13 asks for. The
-         * queue outgrowing the agent is the definition of stalled here: not a
-         * crash, just the moment the technique stopped being enough. */
-        if (stalled_day < 0 && a.w->open_count > 60) stalled_day = a.w->day;
+        /* WHERE IT STALLED, which is the other half of what §13 asks for.
+         *
+         * Not "the queue got big" -- the queue is SUPPOSED to get big, and a
+         * fixed threshold reported a stall on day 35 of a run that went on to
+         * close every ticket it ever saw. The moment the technique stopped
+         * being enough is the first time something went past its SLA and was
+         * still sitting there. */
+        if (stalled_day < 0) {
+            Buf st;
+            buf_init(&st);
+            world_ticket_stats(a.w, &st);
+            const char *ob = st.p ? strstr(st.p, "\"open_breached\":") : NULL;
+            if (ob && atoi(ob + 16) > 0) stalled_day = a.w->day;
+            buf_free(&st);
+        }
         if (users_cap && a.w->active >= users_cap) break;
         /* The gate has what it came for once the org is past the second
          * window; running on costs minutes and measures nothing. */
@@ -493,8 +730,8 @@ static int play_once(uint64_t seed, const char *specdir, int days, bool naive, b
     world_ticket_stats(a.w, &st);
     printf("play: %s\n", st.p ? st.p : "");
     buf_free(&st);
-    if (stalled_day >= 0) printf("play: the queue outgrew the agent on day %d\n", stalled_day);
-    else                  printf("play: the agent kept up for the whole run\n");
+    if (stalled_day >= 0) printf("play: first missed SLA on day %d\n", stalled_day);
+    else                  printf("play: nothing ever went past its SLA\n");
 
     if (lo_out) { lo_out->seen += lo.seen; lo_out->failed += lo.failed; }
     if (hi_out) { hi_out->seen += hi.seen; hi_out->failed += hi.failed; }
@@ -538,7 +775,7 @@ static int play_once(uint64_t seed, const char *specdir, int days, bool naive, b
         buf_free(&dump);
     }
 
-    rb_free(tids); rb_free(refs); rb_free(chase);
+    rb_free(tids); rb_free(refs); rb_free(types); rb_free(chase);
     buf_free(&a.out);
     rb_free(a.tried);
     world_free(a.w);
@@ -549,6 +786,175 @@ static int play_once(uint64_t seed, const char *specdir, int days, bool naive, b
 int play_run(uint64_t seed, const char *specdir, int days, bool naive, int users_cap, const char *out_path)
 {
     return play_once(seed, specdir, days, naive, false, users_cap, NULL, NULL, out_path);
+}
+
+/* One day of unattended running: the systems work the queue, nobody watches. */
+/* THE DAY ARRIVES, AND THEN YOU WORK IT -- in that order.
+ *
+ * The other order looks equivalent and is not. Tickets are raised when the
+ * day rolls, so working the queue and then rolling the day leaves every
+ * ticket raised that morning sitting open until tomorrow: the queue at any
+ * day boundary is exactly one day's intake, and since the company grows 6% a
+ * day, that queue GROWS 6% A DAY no matter how good the automation is. The
+ * vacation's "queue no deeper at the end than at the start" (§12) would then
+ * be unwinnable for a reason that has nothing to do with the player.
+ *
+ * Day, then work. */
+static void vacation_day(Agent *a, Vacation *v)
+{
+    world_day_advance(a->w);
+    int32_t today = a->w->day;
+
+    Placement pl;
+    place(a, &pl);
+    capacity_ahead(a, &pl);
+    ex(a, "ticket.list open %d", 8192);
+
+    /* Take a copy of the day's queue before working it, because working it
+     * changes it. */
+    Buf queue;
+    buf_init(&queue);
+    buf_put(&queue, a->out.p ? a->out.p : "", a->out.len);
+
+    int done = 0;
+    for (const char *p = queue.p; p && *p && a->w->day == today; ) {
+        const char *nl = strchr(p, '\n');
+        size_t len = nl ? (size_t)(nl - p) : strlen(p);
+        if (len && *p == '{') {
+            Buf one;
+            buf_init(&one);
+            buf_put(&one, p, len);
+            char tid[RB_ID_MAX] = "", ref[RB_ID_MAX] = "", type[RB_NAME_MAX] = "";
+            if (json_str(&one, "id", tid, sizeof tid) && json_str(&one, "ref", ref, sizeof ref)) {
+                json_str(&one, "type", type, sizeof type);
+                bool ok;
+                if (!strcmp(type, "service.capacity")) {
+                    ok = capacity_careful(a, tid, ref);
+                    place(a, &pl);
+                } else if (!strcmp(type, "user.onboard")) {
+                    ok = onboard_careful(a, &pl, tid, ref);
+                } else {
+                    /* A TYPE THE AUTOMATION DOES NOT KNOW ABOUT.
+                     * This is the most useful thing the vacation report can
+                     * say, and it is why the report names types rather than
+                     * counting failures: "your systems have never heard of
+                     * offboarding" is actionable, "94%" is not. */
+                    vacation_note_unhandled(v, type[0] ? type : "(unknown)");
+                    ok = false;
+                }
+                if (!ok && type[0]) vacation_note_unhandled(v, type);
+                if (++done % REPLACE_EVERY == 0) { place(a, &pl); capacity_ahead(a, &pl); }
+            }
+            buf_free(&one);
+        }
+        if (!nl) break;
+        p = nl + 1;
+    }
+    buf_free(&queue);
+
+    /* Did anything fall over? Sampled at the day boundary; a service that is
+     * over nominal at close of business has been over nominal for a good deal
+     * more than the thirty minutes §12 allows. */
+    ex(a, "appl.list");
+    for (const char *p = a->out.p; p && *p; ) {
+        const char *nl = strchr(p, '\n');
+        size_t len = nl ? (size_t)(nl - p) : strlen(p);
+        if (len && *p == '{') {
+            Buf one;
+            buf_init(&one);
+            buf_put(&one, p, len);
+            const char *lp = strstr(one.p, "\"load_pct\":");
+            int load = lp ? atoi(lp + 11) : 0;
+            if (load > 100) {
+                v->degraded_minutes += RB_DAY_MINUTES;
+                if (load > v->worst_load) {
+                    v->worst_load = load;
+                    json_str(&one, "id", v->worst_service, RB_ID_MAX);
+                }
+            }
+            buf_free(&one);
+        }
+        if (!nl) break;
+        p = nl + 1;
+    }
+}
+
+int vacation_run(uint64_t seed, const char *specdir, int days, int at_users)
+{
+    char serr[RB_ERR_MAX];
+    Specs *specs = specs_load(specdir, serr, sizeof serr);
+    if (!specs) { printf("vacation: FAIL  specs do not load: %s\n", serr); return 1; }
+
+    Agent a;
+    memset(&a, 0, sizeof a);
+    a.w = world_new(seed, specs);
+    buf_init(&a.out);
+    proto_open(&a.s, a.w);
+    a.s.prov = PROV_SYSTEM;   /* on vacation, everything is done by a system */
+
+    printf("vacation: growing the org to %d users first\n", at_users);
+    for (int d = 0; d < 400 && a.w->active < at_users; d++) {
+        Vacation ignore;
+        memset(&ignore, 0, sizeof ignore);
+        vacation_day(&a, &ignore);
+    }
+    if (a.w->active < at_users) {
+        printf("vacation: FAIL  the org never reached %d users\n", at_users);
+        buf_free(&a.out); world_free(a.w); specs_free(specs);
+        return 1;
+    }
+
+    Vacation v;
+    memset(&v, 0, sizeof v);
+    v.open_start = a.w->open_count;
+    int32_t closed_start = a.w->closed_total, breached_start = a.w->breached_total;
+    int32_t day_start = a.w->day;
+
+    printf("vacation: %d days, %d users, nobody watching. Day %d.\n",
+           days, a.w->active, a.w->day);
+    for (int d = 0; d < days; d++) vacation_day(&a, &v);
+
+    v.open_end = a.w->open_count;
+    int closed = a.w->closed_total - closed_start;
+    int breached = a.w->breached_total - breached_start;
+    v.within_pct = closed ? ((closed - breached) * 100) / closed : 100;
+
+    printf("vacation: day %d to %d — %d users, %d tickets closed\n",
+           day_start, a.w->day, a.w->active, closed);
+
+    int fails = 0;
+    bool sla_ok   = v.within_pct >= 99;
+    bool queue_ok = v.open_end <= v.open_start;
+    bool svc_ok   = v.degraded_minutes <= 30;
+    if (!sla_ok)   fails++;
+    if (!queue_ok) fails++;
+    if (!svc_ok)   fails++;
+
+    printf("vacation: %s  %d%% of tickets resolved within SLA (want 99%%)\n",
+           sla_ok ? "PASS" : "FAIL", v.within_pct);
+    printf("vacation: %s  queue %d deep at the start, %d at the end\n",
+           queue_ok ? "PASS" : "FAIL", v.open_start, v.open_end);
+    if (svc_ok)
+        printf("vacation: PASS  no service went over nominal capacity\n");
+    else
+        printf("vacation: FAIL  %s ran at %d%% of nominal for about %d in-game minutes (30 allowed)\n",
+               v.worst_service[0] ? v.worst_service : "a service", v.worst_load, v.degraded_minutes);
+
+    /* THE DIAGNOSTIC HALF. Failing is not fatal; it is a list of things to go
+     * and automate. */
+    if (v.nunhandled) {
+        printf("vacation: your systems did not handle these ticket types:\n");
+        for (int i = 0; i < v.nunhandled; i++) printf("vacation:   %s\n", v.unhandled[i]);
+    }
+    if (fails)
+        printf("vacation: not this time. Fix what the report names and go again — nothing is lost.\n");
+    else
+        printf("vacation: the company ran itself for %d days. Go on holiday.\n", days);
+
+    buf_free(&a.out);
+    world_free(a.w);
+    specs_free(specs);
+    return fails ? 1 : 0;
 }
 
 /* SEVERAL SEEDS, SUMMED, because one run is not a measurement.

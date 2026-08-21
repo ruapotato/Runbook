@@ -39,6 +39,8 @@ typedef struct {
     size_t    nr, cap;
     uint32_t *idx;         /* open addressing over the key; 0 empty, ~0 tombstone */
     size_t    icap;
+    uint32_t *idx2;        /* and over cs->index_field, when there is one */
+    size_t    icap2;
 } Coll;
 
 typedef struct {
@@ -91,6 +93,14 @@ Coll *inst_coll(Inst *in, const char *name);
  * a dead record is returned, because "this login is spent" and "there is no
  * such login" are different answers and the player needs both. */
 Rec  *coll_find(Coll *c, const char *const *keyvals, int nkey);
+/* Find by the collection's one extra indexed field. NULL when the collection
+ * does not index that field, so callers must be prepared to scan. */
+Rec  *coll_find_by(Coll *c, const char *field, const char *val);
+/* Find a record by key anywhere in the service -- every instance of the same
+ * appliance kind. Used for collections whose keys are identity rather than
+ * storage; see CollSpec.service_scope. */
+Rec  *service_find(World *w, const Inst *like, const char *coll,
+                   const char *const *keyvals, int nkey, Inst **which);
 Rec  *coll_insert(Coll *c, Prov prov, int32_t day);
 /* Index a record once its key fields are set. Insert and index are separate
  * because the key is not known until the caller has filled it in. */
@@ -107,6 +117,12 @@ void appl_call(World *w, Inst *in, const char *endpoint,
  * world_new(), for the org that existed before the player was hired. It is
  * not exported to the API and must not be. */
 Rec *appl_seed(Inst *in, const char *coll, Prov prov, int32_t day);
+/* Copy every replicated collection from `src` onto `dst`. Called when a new
+ * instance of a kind is installed, so it comes up knowing the org's groups
+ * and shares rather than empty. */
+void appl_replicate(Inst *dst, const Inst *src);
+/* Add a replicated record to every instance of a kind at once. */
+Rec *world_replicated_add(World *w, const char *kind, const char *coll, Prov prov);
 
 /* Instance load as a percentage of the model's nominal capacity. Past 100 the
  * appliance gets slower and fails more (§5 Act III, §10). */

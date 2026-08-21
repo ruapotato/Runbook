@@ -356,6 +356,17 @@ int health_run(uint64_t seed, const char *specdir)
                 if (ticket_settle(w, t)) break;
             }
             check(t->closed_day >= 0, "doing the work, through the API, closes the ticket");
+            /* THE COUNTERS AGREE WITH THE QUEUE.
+             * A performance fix once moved ticket closing off the code path
+             * that maintained these, and the run report said "0 closed" about
+             * a run that closed seven thousand. Nothing failed; it just lied. */
+            {
+                int32_t open_n = 0, closed_n = 0;
+                for (size_t q = 0; q < w->ntick; q++)
+                    (w->tick[q].closed_day < 0) ? open_n++ : closed_n++;
+                check(open_n == w->open_count && closed_n == w->closed_total,
+                      "the queue counters agree with the queue itself");
+            }
             check(t->closed_prov == PROV_SCRIPT || t->closed_prov == PROV_SEED,
                   "and the ticket records who did it");
         }
@@ -365,12 +376,19 @@ int health_run(uint64_t seed, const char *specdir)
     check_endpoints(w);
     check_help_verbs(w);
 
+    /* WHAT IS STILL MISSING, said out loud. The two milestones no gate can
+     * finish: M3 asks whether Act I is pleasant and M4 asks whether the
+     * relief of the first script lands, and both are questions for a human at
+     * a keyboard (handoff §15). A suite that did not mention them would read
+     * as though the game were done. */
+    pending("the client", "M3; and no gate can answer whether Act I is pleasant");
+    pending("scripting on the emulated machine, and the macro recorder", "M4");
+
     world_free(w);
     specs_free(specs);
 
     /* --play and --naive-gate are their own gates now; health does not
      * duplicate them, it points at them. */
-    pending("the win condition", "no vacation gate until M7");
 
     printf("health: %d checks, %d failed\n", checks, fails);
     return fails ? 1 : 0;

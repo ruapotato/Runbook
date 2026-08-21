@@ -49,6 +49,24 @@ static void coll_reindex(Coll *c, size_t cap)
     c->icap = cap;
 }
 
+static void coll_reindex2(Coll *c, size_t cap)
+{
+    uint32_t *tab = rb_alloc(cap * sizeof *tab);
+    size_t m = cap - 1;
+    for (size_t i = 0; i < c->nr; i++) {
+        if (c->r[i].dead) continue;
+        const char *v = rec_get(&c->r[i], c->cs->index_field);
+        if (!v) continue;
+        const char *one[1] = { v };
+        size_t s = (size_t)(key_hash(one, 1) & m);
+        while (tab[s] != IDX_EMPTY) s = (s + 1) & m;
+        tab[s] = (uint32_t)(i + 1);
+    }
+    rb_free(c->idx2);
+    c->idx2 = tab;
+    c->icap2 = cap;
+}
+
 static void coll_reserve(Coll *c, size_t want)
 {
     if (want > c->cap) {
@@ -62,6 +80,11 @@ static void coll_reserve(Coll *c, size_t want)
         size_t cap = c->icap ? c->icap : 64;
         while (want * 10 >= cap * 7) cap *= 2;
         coll_reindex(c, cap);
+    }
+    if (c->cs->index_field[0] && (!c->icap2 || want * 10 >= c->icap2 * 7)) {
+        size_t cap = c->icap2 ? c->icap2 : 64;
+        while (want * 10 >= cap * 7) cap *= 2;
+        coll_reindex2(c, cap);
     }
 }
 
@@ -123,6 +146,23 @@ Rec *coll_insert(Coll *c, Prov prov, int32_t day)
 
 /* Called after the key fields are filled in. Kept separate from insert
  * because the key is not known until the caller has set it. */
+Rec *coll_find_by(Coll *c, const char *field, const char *val)
+{
+    if (!c->cs->index_field[0] || strcmp(c->cs->index_field, field) || !c->icap2) return NULL;
+    size_t m = c->icap2 - 1;
+    const char *one[1] = { val };
+    size_t s = (size_t)(key_hash(one, 1) & m);
+    while (c->idx2[s] != IDX_EMPTY) {
+        if (c->idx2[s] != IDX_DEAD) {
+            Rec *r = &c->r[c->idx2[s] - 1];
+            const char *have = rec_get(r, field);
+            if (have && !strcmp(have, val) && !r->dead) return r;
+        }
+        s = (s + 1) & m;
+    }
+    return NULL;
+}
+
 void coll_index_rec(Coll *c, Rec *r)
 {
     const char *kv[SPEC_MAX_KEYS];
@@ -134,6 +174,17 @@ void coll_index_rec(Coll *c, Rec *r)
     size_t s = (size_t)(key_hash(kv, c->cs->nkey) & m);
     while (c->idx[s] != IDX_EMPTY && c->idx[s] != IDX_DEAD) s = (s + 1) & m;
     c->idx[s] = (uint32_t)((r - c->r) + 1);
+
+    if (c->cs->index_field[0] && c->icap2) {
+        const char *v = rec_get(r, c->cs->index_field);
+        if (v) {
+            const char *one[1] = { v };
+            size_t m2 = c->icap2 - 1;
+            size_t s2 = (size_t)(key_hash(one, 1) & m2);
+            while (c->idx2[s2] != IDX_EMPTY && c->idx2[s2] != IDX_DEAD) s2 = (s2 + 1) & m2;
+            c->idx2[s2] = (uint32_t)((r - c->r) + 1);
+        }
+    }
 }
 
 static void coll_unindex(Coll *c, Rec *r)
@@ -150,6 +201,20 @@ static void coll_unindex(Coll *c, Rec *r)
         if (c->idx[s] == want) { c->idx[s] = IDX_DEAD; return; }
         s = (s + 1) & m;
     }
+}
+
+Rec *service_find(World *w, const Inst *like, const char *coll,
+                  const char *const *keyvals, int nkey, Inst **which)
+{
+    for (size_t i = 0; i < w->ninst; i++) {
+        Inst *in = w->inst[i];
+        if (strcmp(in->m->kind, like->m->kind)) continue;
+        Coll *c = inst_coll(in, coll);
+        if (!c) continue;
+        Rec *r = coll_find(c, keyvals, nkey);
+        if (r) { if (which) *which = in; return r; }
+    }
+    return NULL;
 }
 
 /* -------------------------------------------------------------- instances */
@@ -178,7 +243,11 @@ Inst *inst_new(World *w, const Model *m, const Vendor *v, const char *id)
 void inst_free(Inst *in)
 {
     if (!in) return;
-    for (int i = 0; i < in->ncoll; i++) { rb_free(in->coll[i].r); rb_free(in->coll[i].idx); }
+    for (int i = 0; i < in->ncoll; i++) {
+        rb_free(in->coll[i].r);
+        rb_free(in->coll[i].idx);
+        rb_free(in->coll[i].idx2);
+    }
     rb_free(in);
 }
 
@@ -193,6 +262,23 @@ Rec *appl_seed(Inst *in, const char *coll, Prov prov, int32_t day)
     Coll *c = inst_coll(in, coll);
     if (!c) return NULL;
     return coll_insert(c, prov, day);
+}
+
+void appl_replicate(Inst *dst, const Inst *src)
+{
+    for (int i = 0; i < dst->ncoll; i++) {
+        if (!dst->coll[i].cs->replicated) continue;
+        const Coll *sc = NULL;
+        for (int j = 0; j < src->ncoll; j++)
+            if (!strcmp(src->coll[j].cs->name, dst->coll[i].cs->name)) sc = &src->coll[j];
+        if (!sc) continue;
+        for (size_t r = 0; r < sc->nr; r++) {
+            if (sc->r[r].dead) continue;
+            Rec *n = coll_insert(&dst->coll[i], (Prov)sc->r[r].prov, sc->r[r].created_day);
+            *n = sc->r[r];
+            coll_index_rec(&dst->coll[i], n);
+        }
+    }
 }
 
 /* The first collection is the one that defines the instance's load. For a
@@ -418,6 +504,19 @@ void appl_call(World *w, Inst *in, const char *endpoint,
         }
 
         r = coll_find(c, kv, c->cs->nkey);
+        /* A key that is identity rather than storage has to be free across
+         * the whole service, not just on this box. */
+        if (!r && c->cs->service_scope) {
+            Inst *holder = NULL;
+            Rec *elsewhere = service_find(w, in, c->cs->name, kv, c->cs->nkey, &holder);
+            if (elsewhere) {
+                char msg[200];
+                snprintf(msg, sizeof msg, "%s is already taken on %s",
+                         c->cs->key[0], holder ? holder->id : "another appliance");
+                result_err(out, xml, RB_CONFLICT, msg);
+                goto done;
+            }
+        }
         if (r) {
             if (r->dead && !c->reuse) {
                 result_err(out, xml, RB_CONFLICT, "that key is spent and cannot be reused");

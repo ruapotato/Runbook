@@ -23,6 +23,7 @@ state:
     key: [login, share]
     fields: [login, share, access]
   shares:
+    replicated: yes      # the org's, not this box's; see spec.h
     key: [name]
     fields: [name, path, dept]
 

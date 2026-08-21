@@ -46,7 +46,7 @@ BIN = build/runbook
 # become the default and silently build the wrong thing.
 .DEFAULT_GOAL := all
 
-.PHONY: all check health mancheck play naive determinism clean windows specs
+.PHONY: all check health mancheck play naive vacation determinism clean windows specs
 
 all: $(BIN)
 
@@ -72,7 +72,7 @@ build/spec.o: core/specbin.h
 # ---------------------------------------------------------------- the gates
 # M0's whole deliverable. Nothing else starts until these are green
 # (handoff §15).
-check: health mancheck play naive determinism
+check: health mancheck play naive vacation determinism
 
 health: $(BIN)
 	@./$(BIN) --health
@@ -89,6 +89,12 @@ play: $(BIN)
 
 naive: $(BIN)
 	@./$(BIN) --naive-gate
+
+# THE WIN CONDITION, AS A GATE (§12). Seven simulated days at four thousand
+# users with nobody watching. If the reference automation cannot go on holiday,
+# neither can a player's, and the endgame does not exist.
+vacation: $(BIN)
+	@./$(BIN) --vacation 7
 
 determinism: $(BIN)
 	@./tools/check_determinism.sh

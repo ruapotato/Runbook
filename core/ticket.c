@@ -125,6 +125,12 @@ static Rec *find_record(World *w, const char *kind, const char *coll,
                 continue;
             }
         }
+        /* The one extra indexed field, when the where-clause is exactly it. */
+        if (nwhere == 1) {
+            Rec *r = coll_find_by(c, where[0].k, where[0].v);
+            if (r) { if (which) *which = in; return r; }
+            if (c->cs->index_field[0] && !strcmp(c->cs->index_field, where[0].k)) continue;
+        }
         for (size_t ri = 0; ri < c->nr; ri++) {
             Rec *r = &c->r[ri];
             if (r->dead) continue;
@@ -246,6 +252,31 @@ void ticket_evaluate(World *w, Ticket *t, Verdict *v)
                          ck->field, have ? have : "", expect);
             break;
         }
+        case CHK_CAPACITY: {
+            char kind[RB_NAME_MAX];
+            if (!expand(w, t, &bs, ck->appliance, kind, sizeof kind)) {
+                snprintf(v->why[i], sizeof v->why[i], "this ticket does not name an appliance kind");
+                break;
+            }
+            int64_t live = 0, cap = 0;
+            int instances = 0;
+            for (size_t k = 0; k < w->ninst; k++) {
+                Inst *in = w->inst[k];
+                if (strcmp(in->m->kind, kind)) continue;
+                instances++;
+                cap += in->m->capacity;
+                if (in->ncoll) for (size_t r = 0; r < in->coll[0].nr; r++)
+                    if (!in->coll[0].r[r].dead) live++;
+            }
+            int pct = cap ? (int)((live * 100) / cap) : 999;
+            v->passed[i] = pct <= ck->max_pct;
+            if (!v->passed[i])
+                snprintf(v->why[i], sizeof v->why[i],
+                         "%d %s appliance%s hold %lld records against %lld of capacity (%d%%, want %d%%)",
+                         instances, kind, instances == 1 ? "" : "s",
+                         (long long)live, (long long)cap, pct, ck->max_pct);
+            break;
+        }
         default:
             snprintf(v->why[i], sizeof v->why[i], "unimplemented check");
             break;
@@ -255,6 +286,14 @@ void ticket_evaluate(World *w, Ticket *t, Verdict *v)
     if (v->all) t->closed_prov = prov;
 }
 
+/* THE BOOKKEEPING LIVES HERE, not in the sweep.
+ *
+ * It used to live in world_ticket_sweep(), which was fine for exactly as long
+ * as the sweep was the only thing that closed tickets. The moment reading one
+ * ticket stopped sweeping the whole queue -- a performance fix -- the queue
+ * counters stopped being updated at all, and the run report cheerfully said
+ * "7,347 open, 0 closed" about a run that had closed 6,997 of them. Counters
+ * that are maintained by the caller are counters that go wrong. */
 bool ticket_settle(World *w, Ticket *t)
 {
     if (t->closed_day >= 0) return false;
@@ -267,6 +306,9 @@ bool ticket_settle(World *w, Ticket *t)
      * only at close time would let a queue that ran a week behind report a
      * perfect score the moment it caught up. */
     if (w->day > t->due_day || (w->day == t->due_day && w->ms > t->due_ms)) t->breached = true;
+    w->open_count--;
+    w->closed_total++;
+    if (t->breached) w->breached_total++;
     return true;
 }
 
@@ -392,7 +434,9 @@ void world_ticket_exception(World *w, Ticket *t)
         char login[RB_NAME_MAX];
         world_login_for(w, u, login, sizeof login);
         const char *kv[1] = { login };
-        if (coll_find(ac, kv, 1)) return;     /* the login is already spoken for */
+        /* Across the whole directory service, not this one box: the world
+         * must not create a duplicate identity while inventing a history. */
+        if (service_find(w, dir, "accounts", kv, 1, NULL)) return;
         Rec *old = coll_insert(ac, PROV_SEED, w->day);
         rec_set(old, "login", login);
         rec_set(old, "user_ref", u->id);
@@ -415,19 +459,29 @@ void world_ticket_exception(World *w, Ticket *t)
         /* A DEPARTMENT WITH A NON-DEFAULT SHARE. Handoff §6 names this one
          * exactly. The share exists; it is simply not the one the pattern
          * would have guessed, and the ticket says which. */
-        Inst *fs = NULL;
-        for (size_t i = 0; i < w->ninst; i++) if (!strcmp(w->inst[i]->m->kind, "fileserver")) fs = w->inst[i];
-        if (!fs) return;
-        Coll *sc = inst_coll(fs, "shares");
         char name[RB_VAL_MAX];
         snprintf(name, sizeof name, "proj-%s", rb_dept_name[u->dept]);
-        const char *kv[1] = { name };
-        if (!coll_find(sc, kv, 1)) {
-            Rec *sh = coll_insert(sc, PROV_SEED, w->day);
-            rec_set(sh, "name", name);
-            rec_setf(sh, "path", "/srv/projects/%s", rb_dept_name[u->dept]);
-            rec_set(sh, "dept", rb_dept_name[u->dept]);
-            coll_index_rec(sc, sh);
+        bool exists = false;
+        for (size_t i = 0; i < w->ninst && !exists; i++) {
+            if (strcmp(w->inst[i]->m->kind, "fileserver")) continue;
+            Coll *sc = inst_coll(w->inst[i], "shares");
+            const char *kv[1] = { name };
+            if (sc && coll_find(sc, kv, 1)) exists = true;
+        }
+        if (!exists) {
+            /* On every file server, not the first one. A share the player can
+             * only reach from one of three appliances is a puzzle about our
+             * data model, not about theirs. */
+            for (size_t i = 0; i < w->ninst; i++) {
+                if (strcmp(w->inst[i]->m->kind, "fileserver")) continue;
+                Coll *sc = inst_coll(w->inst[i], "shares");
+                if (!sc) continue;
+                Rec *sh = coll_insert(sc, PROV_SEED, w->day);
+                rec_set(sh, "name", name);
+                rec_setf(sh, "path", "/srv/projects/%s", rb_dept_name[u->dept]);
+                rec_set(sh, "dept", rb_dept_name[u->dept]);
+                coll_index_rec(sc, sh);
+            }
         }
         ticket_field(t, "share_override", name);
         break;
@@ -478,12 +532,7 @@ int world_ticket_sweep(World *w)
     int closed = 0;
     for (size_t i = 0; i < w->ntick; i++) {
         if (w->tick[i].closed_day >= 0) continue;
-        if (ticket_settle(w, &w->tick[i])) {
-            closed++;
-            w->open_count--;
-            w->closed_total++;
-            if (w->tick[i].breached) w->breached_total++;
-        }
+        if (ticket_settle(w, &w->tick[i])) closed++;
     }
     return closed;
 }
@@ -547,6 +596,45 @@ void world_ticket_day(World *w)
             /* and the queue may have moved under us */
             t = &w->tick[i];
         }
+    }
+}
+
+/* THE WORLD NOTICING IT IS FULL.
+ *
+ * Raised once per kind, when the appliances of that kind are past the
+ * threshold and there is not already a ticket open about it. Once, because a
+ * service that is full is one problem however many days it stays full -- and
+ * because a ticket type that re-raises itself daily would make the queue
+ * depth criterion of the vacation test (§12) unwinnable for reasons that have
+ * nothing to do with the player. */
+void world_ticket_capacity(World *w)
+{
+    const TicketType *tt = w->specs ? spec_ticket(w->specs, "service.capacity") : NULL;
+    if (!tt) return;
+
+    for (size_t i = 0; i < w->ninst; i++) {
+        const char *kind = w->inst[i]->m->kind;
+        bool first = true;
+        for (size_t j = 0; j < i; j++) if (!strcmp(w->inst[j]->m->kind, kind)) first = false;
+        if (!first) continue;
+
+        int64_t live = 0, cap = 0;
+        for (size_t k = 0; k < w->ninst; k++) {
+            Inst *in = w->inst[k];
+            if (strcmp(in->m->kind, kind)) continue;
+            cap += in->m->capacity;
+            if (in->ncoll) for (size_t r = 0; r < in->coll[0].nr; r++)
+                if (!in->coll[0].r[r].dead) live++;
+        }
+        if (!cap || (live * 100) / cap <= RB_CAPACITY_WARN_PCT) continue;
+
+        bool already = false;
+        for (size_t q = 0; q < w->ntick && !already; q++)
+            if (w->tick[q].closed_day < 0 && w->tick[q].type == tt &&
+                !strcmp(w->tick[q].subject, kind)) already = true;
+        if (already) continue;
+
+        world_ticket_new(w, tt, kind);
     }
 }
 

@@ -210,6 +210,22 @@ static bool load_model(Ctx *c, const YNode *root, Model *m)
              * wants the unforgiving one should have to say so. */
             cs->reuse_key = strcmp(y_str(cn, "reuse_key", "yes"), "no") != 0 &&
                             strcmp(y_str(cn, "reuse_key", "yes"), "false") != 0;
+            cs->replicated = strcmp(y_str(cn, "replicated", "no"), "no") != 0 &&
+                             strcmp(y_str(cn, "replicated", "no"), "false") != 0;
+            cpstr(cs->index_field, RB_NAME_MAX, y_str(cn, "index", ""));
+            {
+                const char *sc = y_str(cn, "scope", "appliance");
+                if      (!strcmp(sc, "service"))   cs->service_scope = true;
+                else if (!strcmp(sc, "appliance")) cs->service_scope = false;
+                else return sfail(c, "collection %s: scope must be appliance or service", cs->name);
+            }
+            if (cs->index_field[0] && !in_table((char (*)[RB_NAME_MAX])cs->field, cs->nfield, cs->index_field))
+                return sfail(c, "collection %s indexes '%s', which is not one of its fields",
+                             cs->name, cs->index_field);
+            if (cs->replicated && i == 0)
+                return sfail(c, "collection %s is replicated and also the capacity collection; "
+                                "the first collection is what an instance's load is measured by",
+                             cs->name);
             if (!cs->nfield) return sfail(c, "collection %s has no fields", cs->name);
             for (int k = 0; k < cs->nkey; k++)
                 if (!in_table(cs->field, cs->nfield, cs->key[k]))
@@ -536,6 +552,7 @@ static bool load_ticket(Ctx *c, const Specs *s, const YNode *root, TicketType *t
         else if (!strcmp(k, "absent"))     ck->kind = CHK_ABSENT;
         else if (!strcmp(k, "equals"))     ck->kind = CHK_EQUALS;
         else if (!strcmp(k, "convention")) ck->kind = CHK_CONVENTION;
+        else if (!strcmp(k, "capacity"))   { ck->kind = CHK_CAPACITY; ck->max_pct = y_int(cn, "max_pct", 85); }
         else return sfail(c, "ticket %s: check %s has an unknown kind '%s'", t->id, ck->id, k);
 
         const YNode *wh = y_get(cn, "where");
@@ -551,7 +568,22 @@ static bool load_ticket(Ctx *c, const Specs *s, const YNode *root, TicketType *t
             return sfail(c, "ticket %s: check %s: where must be a mapping", t->id, ck->id);
         }
 
-        if (ck->kind == CHK_EXISTS || ck->kind == CHK_ABSENT) {
+        if (ck->kind == CHK_CAPACITY) {
+            if (!ck->appliance[0])
+                return sfail(c, "ticket %s: check %s needs an appliance kind", t->id, ck->id);
+            if (ck->max_pct < 1 || ck->max_pct > 100)
+                return sfail(c, "ticket %s: check %s has a nonsense max_pct", t->id, ck->id);
+            /* The kind may be a placeholder -- service.capacity's subject IS
+             * the kind -- in which case there is nothing to check here and it
+             * is checked against the world at evaluation time instead. */
+            if (ck->appliance[0] != '{') {
+                bool any = false;
+                for (size_t mi = 0; mi < s->nmodel; mi++)
+                    if (!strcmp(s->model[mi].kind, ck->appliance)) any = true;
+                if (!any) return sfail(c, "ticket %s: check %s names appliance kind '%s'; no model has it",
+                                       t->id, ck->id, ck->appliance);
+            }
+        } else if (ck->kind == CHK_EXISTS || ck->kind == CHK_ABSENT) {
             if (!ck->appliance[0] || !ck->coll[0])
                 return sfail(c, "ticket %s: check %s needs an appliance and a collection", t->id, ck->id);
             if (!ck->nwhere)

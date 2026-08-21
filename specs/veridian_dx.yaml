@@ -18,9 +18,12 @@ doc: "The directory of record. Accounts, groups and memberships for the whole or
 state:
   accounts:
     key: [login]
+    scope: service       # identity, not storage; see spec.h
+    index: user_ref        # what acceptance checks ask by; see spec.h
     reuse_key: no          # a login is never free again; see spec.h
     fields: [login, user_ref, display_name, dept, status]
   groups:
+    replicated: yes      # the org's, not this box's; see spec.h
     key: [name]
     fields: [name, dept]
   memberships:
