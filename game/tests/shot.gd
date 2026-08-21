@@ -28,45 +28,41 @@ func _tick() -> void:
 		var desk: Node = root.get_child(root.get_child_count() - 1)
 		if desk.has_method("_launch"):
 			var api: RunbookApi = desk.api
-			# A day's work, done, so the end-of-day report has something to say.
-			for line in ["esedgeton u_00041 \"Emlin Sedgeton\" sales",
-						 "sharrcroft u_00042 \"Sten Harrcroft\" support"]:
-				var f: PackedStringArray = line.split(" ")
-				pass
-			api.exec("rec.start onboard")
-			var people := [["esedgeton", "u_00041", "Emlin Sedgeton", "sales"],
-						   ["sharrcroft", "u_00042", "Sten Harrcroft", "support"]]
-			for raw in people:
-				var p: Array = raw
-				api.exec("form.submit directory_01 account_new login=%s user_ref=%s display_name=\"%s\" dept=%s" % [p[0], p[1], p[2], p[3]])
-				api.exec("form.submit directory_01 member_add login=%s group=dept-%s" % [p[0], p[3]])
-				api.exec("form.submit mail_01 mailbox_new login=%s address=%s@harbrook.example quota_mb=2048 status=active" % [p[0], p[0]])
-			api.exec("rec.stop")
-			api.exec("rec.save /root/scripts/onboard.py")
 
-			desk._launch("Queue")
-			desk._launch("Files")
-			desk._edit_file("/root/scripts/onboard.py")
+			# A FIGHT ALREADY IN TROUBLE, because a screenshot of a ship at
+			# full hull with nothing on fire shows none of what this is.
+			api.exec("power shields 2")
+			api.exec("power weapons 2")
+			api.exec("power computer 2")
+			api.exec("resume")
+			for i in range(300):
+				api.exec("tick 0.25")
+			api.exec("pause")
+
+			desk._launch("Bridge")
 			desk._launch("Terminal")
+			desk._launch("Files")
 
-			_place(desk, "Queue", Vector2(8, 30), Vector2(470, 380))
-			_place(desk, "Files", Vector2(8, 418), Vector2(470, 354))
-			_place(desk, "onboard.py", Vector2(560, 130), Vector2(700, 400))
-			_place(desk, "Terminal", Vector2(490, 540), Vector2(780, 232))
+			_place(desk, "Bridge", Vector2(8, 30), Vector2(820, 520))
+			_place(desk, "Files", Vector2(840, 30), Vector2(432, 300))
+			_place(desk, "Terminal", Vector2(300, 470), Vector2(880, 300))
 
 			var fw: Node = desk._find_window("Files")
 			if fw != null:
 				var fc: Node = fw.get_meta("content")
-				fc.cwd = "/home/pvane"
+				fc.cwd = "/root/examples"
 				fc.refresh()
-			var q: Node = desk._find_window("Queue")
-			if q != null:
-				var qc: Node = q.get_meta("content")
-				qc._go_home()
+			var bw: Node = desk._find_window("Bridge")
+			if bw != null:
+				var bc: Node = bw.get_meta("content")
+				bc.refresh()
 			var t: Node = desk._find_window("Terminal")
 			if t != null:
 				var tc: Node = t.get_meta("content")
-				tc.feed("cat /home/pvane/notes.txt\n")
+				tc.feed("rb crew\n")
+				# The premise, in the screenshot: a click, arriving as text.
+				desk._echo_command("power shields 3")
+				desk._echo_command("send Vane 2")
 	if frames < 14:
 		return
 	var img := root.get_texture().get_image()

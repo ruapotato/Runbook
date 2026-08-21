@@ -102,6 +102,7 @@ static void cmd_help(Buf *out)
         "  pause / resume          time stops. thinking is free\n"
         "\n"
         "  ship                    the whole ship, as one object\n"
+        "  status / enemy          your numbers, and theirs, separately\n"
         "  rooms                   one line per room\n"
         "  crew                    one line per person\n"
         "  log                     what just happened\n"
@@ -198,6 +199,34 @@ bool proto_exec(Session *s, const char *line, Buf *out)
         buf_puts(out, "+OK ship\n");
         ship_render(sh, out);
         buf_puts(out, "\n.\n");
+        return true;
+    }
+
+    /* THE SHIP'S OWN NUMBERS, FLAT. `ship` answers with one nested object,
+     * which is the right shape for a script that wants everything at once
+     * and the wrong shape for anything that flattens keys: the ship has a
+     * hull and so does the raider, and one of them wins. So the two halves
+     * are also available separately, which is what the bridge window reads
+     * and what a script checking one thing wants anyway. */
+    if (!strcmp(cmd, "status")) {
+        buf_puts(out, "+OK status\n");
+        buf_printf(out, "{\"ship\":\"%s\",\"hull\":%d,\"hull_max\":%d,\"shields\":%d,"
+                        "\"power_free\":%d,\"power_total\":%d,\"weapon\":%d,\"clock\":%d,"
+                        "\"paused\":%s,\"over\":%s,\"won\":%s}\n",
+                   sh->name, (int)sh->hull, (int)sh->hull_max, sh->shields,
+                   ship_power_free(sh), ship_power_total(sh), (int)(sh->weapon_charge * 100),
+                   (int)sh->clock, sh->paused ? "true" : "false",
+                   sh->over ? "true" : "false", sh->won ? "true" : "false");
+        buf_puts(out, ".\n");
+        return true;
+    }
+
+    if (!strcmp(cmd, "enemy")) {
+        buf_puts(out, "+OK enemy\n");
+        buf_printf(out, "{\"name\":\"%s\",\"hull\":%d,\"hull_max\":%d,\"shields\":%d,\"charge\":%d}\n",
+                   sh->enemy.name, (int)sh->enemy.hull, (int)sh->enemy.hull_max,
+                   sh->enemy.shields, (int)(sh->enemy.charge * 100));
+        buf_puts(out, ".\n");
         return true;
     }
 

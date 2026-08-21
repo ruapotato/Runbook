@@ -6,10 +6,13 @@
 # every window falls back to a placeholder, and the whole suite passes. A gate
 # that cannot tell "it works" from "it is not there" is worse than no gate.
 #
-# After that it plays: opens the queue, reads a real ticket, fills in the
-# generated forms on all three appliances, and asserts the ticket closes --
-# through the UI, by clicking, exactly as a person would. If Act I is
-# unplayable this fails.
+# After that it plays: opens the bridge, clicks a power pip, picks up a crew
+# member and puts them in another room, and asserts the ship changed -- through
+# the widgets, by clicking, exactly as a person would.
+#
+# AND IT ASSERTS THE PREMISE. Every click has to print the command that
+# performed it. That is not a nicety about logging; it is the reason this game
+# exists, and it is the one thing that would be silently easy to lose.
 extends SceneTree
 
 var failures := 0
@@ -33,107 +36,31 @@ func _init() -> void:
 		return
 
 	var api := RunbookApi.new()
-	ck(api.ready(), "a world booted behind the client")
+	ck(api.ready(), "a ship booted behind the client")
 
 	# The client can only see what the API returns; prove the door works.
-	var info := api.objects(api.exec("world.info"))
-	ck(info.size() == 1 and int(str(info[0].get("users_active", "0"))) > 0,
-	   "world.info comes back through the extension")
+	var st := api.objects(api.exec("status"))
+	ck(st.size() == 1 and int(str(st[0].get("hull", "0"))) > 0,
+	   "the ship's state comes back through the extension")
 
-	var appls := api.objects(api.exec("appl.list"))
-	ck(appls.size() >= 3, "the org has its three appliances")
+	var rooms := api.objects(api.exec("rooms"))
+	ck(rooms.size() == 8, "eight rooms, one line each")
+	var crew := api.objects(api.exec("crew"))
+	ck(crew.size() >= 3, "and a crew to put in them")
 
-	# THE FORMS ARE GENERATED, and this is the assertion that says so: every
-	# form the client would render calls an endpoint that exists and offers
-	# only fields that endpoint accepts. A hand-built screen could drift from
-	# the appliance; a generated one cannot, and this is the proof.
-	var forms_total := 0
-	var forms_bad := 0
-	for raw in appls:
-		var a: Dictionary = raw
-		var id := str(a.get("id", ""))
-		var eps := api.objects(api.exec("appl.endpoints %s" % id))
-		for fraw in api.objects(api.exec("appl.forms %s" % id)):
-			var f: Dictionary = fraw
-			forms_total += 1
-			var found := false
-			for eraw in eps:
-				var ep: Dictionary = eraw
-				if str(ep.get("id", "")) == str(f.get("calls", "")):
-					found = true
-			if not found:
-				forms_bad += 1
-				print("       form %s calls %s, which %s does not have" % [f.get("id"), f.get("calls"), id])
-	ck(forms_total >= 6, "the appliances between them offer the forms Act I needs")
-	ck(forms_bad == 0, "every generated form calls an endpoint that exists")
-
-	# --- play a ticket, through the same calls the forms make ---
-	api.exec("day.advance 1")
-	var open_tickets := api.objects(api.exec("ticket.list open 1"))
-	ck(open_tickets.size() == 1, "a day's work arrives in the queue")
-	if open_tickets.is_empty():
-		_done()
-		return
-
-	var t: Dictionary = open_tickets[0]
-	var tid := str(t.get("id", ""))
-	var subject := str(t.get("ref", ""))
-	var chk := api.exec("ticket.check %s" % tid)
-	ck(chk.find("does not pass yet") >= 0, "a fresh ticket does not pass")
-	ck(chk.find("--") >= 0, "and it says why, for every check that fails")
-
-	var users := api.objects(api.exec("user.get %s" % subject))
-	ck(users.size() == 1, "the ticket's subject is a person the API knows")
-	if users.is_empty():
-		_done()
-		return
-	var u: Dictionary = users[0]
-	var dept := str(u.get("dept", "engineering"))
-	var login := str(u.get("given", "x")).substr(0, 1).to_lower() + str(u.get("family", "y")).to_lower()
-
-	# Six form submissions across three appliances -- the §5 arithmetic, done
-	# by the client. Retried, because the world is allowed to drop a write and
-	# a person would click again.
-	var dir_id := ""
-	var mail_id := ""
-	var fs_id := ""
-	for raw in appls:
-		var a: Dictionary = raw
-		match str(a.get("kind", "")):
-			"directory":  dir_id = str(a.get("id", ""))
-			"mail":       mail_id = str(a.get("id", ""))
-			"fileserver": fs_id = str(a.get("id", ""))
-
-	var submits := [
-		"form.submit %s account_new login=%s user_ref=%s display_name=%s dept=%s" % [dir_id, login, subject, login, dept],
-		"form.submit %s account_edit login=%s status=active dept=%s" % [dir_id, login, dept],
-		"form.submit %s member_add login=%s group=dept-%s" % [dir_id, login, dept],
-		"form.submit %s mailbox_new login=%s address=%s@harbrook.example quota_mb=2048 status=active" % [mail_id, login, login],
-		"form.submit %s home_new login=%s path=/home/%s quota_mb=8192" % [fs_id, login, login],
-		"form.submit %s grant_new login=%s share=share-%s access=rw" % [fs_id, login, dept],
-	]
-	var minutes_before := int(str(api.objects(api.exec("world.info"))[0].get("minutes_left", "480")))
-	for line in submits:
-		for attempt in range(6):
-			if api.ok(api.exec(str(line))):
-				break
-	var minutes_after := int(str(api.objects(api.exec("world.info"))[0].get("minutes_left", "480")))
-
-	# TWELVE IN-GAME MINUTES, which is the number the whole Act I wall is built
-	# on (§5). If clicking through an onboarding stops costing about that, the
-	# wall moves and the balance harness is measuring a different game.
-	var spent := minutes_before - minutes_after
-	ck(spent >= 10 and spent <= 24,
-	   "onboarding by hand cost %d in-game minutes (the design says about 12)" % spent)
-
-	var after := api.exec("ticket.check %s" % tid)
-	ck(after.find(" passes") >= 0, "and the ticket closed, by state, with nobody marking it done")
-
-	# The provenance of hand-clicked work. The whole debt mechanic (§11) rests
-	# on the client attributing form submissions to a person.
-	var closed := api.objects(api.exec("ticket.get %s" % tid))
-	ck(closed.size() == 1 and str(closed[0].get("closed_by", "")) == "hand",
-	   "the world recorded that a human did it")
+	# THE ECONOMY, ASSERTED. A script gets scheduling slices in proportion to
+	# the computer's power, and with the computer dark it gets none. If this
+	# ever passes with zero bars, automation has stopped being a trade and the
+	# game has lost its only real decision.
+	api.exec("power computer 0")
+	api.exec("resume")
+	var enemy_before := int(str((api.objects(api.exec("enemy"))[0] as Dictionary).get("hull", "0")))
+	api.exec("run /root/examples/gunner.py")
+	for i in range(400):
+		api.exec("tick 0.25")
+	var enemy_dark := int(str((api.objects(api.exec("enemy"))[0] as Dictionary).get("hull", "0")))
+	ck(enemy_dark == enemy_before,
+	   "a script with no power in the computer does nothing at all")
 
 	_desktop_checks()
 	_done()
@@ -142,9 +69,10 @@ func _init() -> void:
 #
 # Windows cascade when they open, move where you drag them, resize from the
 # corner, raise when clicked, minimise to the tasklist and maximise to fill
-# the screen between the panels. None of that is decoration -- an operator
-# with six appliances open arranges them the way THEY want, and a client that
-# tiled them into a grid would be making that decision for them.
+# the screen between the panels. None of that is decoration -- somebody with
+# the bridge, a terminal and a script editor open arranges them the way THEY
+# want, and a client that tiled them into a grid would be making that decision
+# for them.
 func _desktop_checks() -> void:
 	var packed: PackedScene = load("res://scenes/desk.tscn")
 	var desk: Node = packed.instantiate()
@@ -152,9 +80,9 @@ func _desktop_checks() -> void:
 	desk.size = Vector2(1280, 800)
 	desk._relayout_desktop()
 
-	desk._launch("Queue")
+	desk._launch("Bridge")
 	desk._launch("Terminal")
-	desk._launch("appl:directory_01")
+	desk._launch("Files")
 	ck(desk.windows.size() == 3, "three windows opened")
 	if desk.windows.size() < 3:
 		return
@@ -227,44 +155,115 @@ func _desktop_checks() -> void:
 	desk._launch("game:gsolitaire")
 	ck(desk._find_window("Solitaire") != null, "the desktop has solitaire on it, like every desktop")
 
-	_click_path(desk)
+	_bridge_checks(desk)
 	_terminal_checks(desk)
-	_recorder_checks(desk)
+	_recorder_checks()
+
+# THE PATH A PERSON ACTUALLY TAKES.
+#
+# Everything above drove the API. A player drives WIDGETS: they click a power
+# pip and a crew member. Those are different code paths, and the one a human
+# uses is the one nothing had tested -- a pip whose hit rectangle was two
+# pixels off would pass every API check in this file and waste a playtest.
+func _bridge_checks(desk: Node) -> void:
+	var win: Node = desk._find_window("Bridge")
+	if win == null:
+		ck(false, "the bridge opened")
+		return
+	var br: Node = win.get_meta("content")
+	br.size = Vector2(860, 560)
+	br.refresh()
+	ck(br.rooms.size() == 8, "the bridge painted eight rooms from the API")
+
+	# --- click the third power pip in the shields room ---
+	var shields := -1
+	for i in range(br.rooms.size()):
+		if str((br.rooms[i] as Dictionary).get("system", "")) == "shields":
+			shields = i
+	ck(shields >= 0, "the shields room is on the deck plan")
+	if shields < 0:
+		return
+
+	var api: RunbookApi = br.api
+	api.exec("pause")
+	api.exec("power shields 1")
+	br.refresh()
+	var click := InputEventMouseButton.new()
+	click.button_index = MOUSE_BUTTON_LEFT
+	click.pressed = true
+	var pip: Rect2 = br._pip_rect(shields, 2)
+	click.position = pip.get_center()
+	br._gui_input(click)
+
+	var after := api.objects(api.exec("rooms"))
+	ck(int(str((after[shields] as Dictionary).get("bars", "0"))) == 3,
+	   "clicking the third power pip gives the shields three bars")
+
+	# THE PREMISE, ASSERTED. The click has to have printed the command.
+	var said := ""
+	for l in br.console:
+		said += str(l) + "\n"
+	ck(said.find("power shields 3") >= 0,
+	   "and the console shows `power shields 3` -- the command the click sent")
+
+	# --- pick somebody up and put them somewhere ---
+	var who := str((br.crew[0] as Dictionary).get("name", ""))
+	var from := int(str((br.crew[0] as Dictionary).get("room", "0")))
+	var cr: Rect2 = br._room_rect(from)
+	click.position = Vector2(cr.position.x + cr.size.x - 22, cr.position.y + 34)
+	br._gui_input(click)
+	ck(br.picked == who, "clicking a crew member picks them up")
+
+	var dest := 0 if from != 0 else 1
+	var dr: Rect2 = br._room_rect(dest)
+	click.position = dr.get_center()
+	br._gui_input(click)
+	ck(br.picked == "", "and clicking a room puts them down")
+	said = ""
+	for l in br.console:
+		said += str(l) + "\n"
+	ck(said.find("send %s %d" % [who, dest]) >= 0,
+	   "with `send %s %d` in the console, which is a line a script can use" % [who, dest])
+
+	# AND IT ARRIVED IN THE TERMINAL. The desk hands every bridge command to
+	# any open shell, which is the detail that teaches the whole premise.
+	var tw: Node = desk._find_window("Terminal")
+	if tw != null:
+		var t: Node = tw.get_meta("content")
+		var seen := ""
+		var n: int = t.lines.size()
+		for i in range(maxi(0, n - 30), n):
+			seen += str(t.lines[i]) + " "
+		ck(seen.find("power shields 3") >= 0,
+		   "and the same line showed up in the open terminal, as text")
 
 # THE MACRO RECORDER (decision 15): the single most important accessibility
 # feature in the game, and the one whose failure mode is silent. A recorder
 # that emits a script which does not RUN teaches a player that they cannot
 # program, which is the precise opposite of the point -- so the gate records a
-# job through the UI, reads what came out, and runs it.
-func _recorder_checks(desk: Node) -> void:
+# fight through the API, reads what came out, and runs it.
+func _recorder_checks() -> void:
 	var api := RunbookApi.new()
 	api.exec("rec.start gatetest")
 
-	# Two people, the same three steps each -- which is what makes a loop.
-	var people := [["gtest1", "u_00001", "Gate One", "sales"],
-				   ["gtest2", "u_00002", "Gate Two", "support"]]
-	for raw in people:
-		var p: Array = raw
-		api.exec("form.submit directory_01 account_new login=%s user_ref=%s display_name=\"%s\" dept=%s"
-				 % [p[0], p[1], p[2], p[3]])
-		api.exec("form.submit directory_01 member_add login=%s group=dept-%s" % [p[0], p[3]])
-		api.exec("form.submit mail_01 mailbox_new login=%s address=%s@harbrook.example quota_mb=2048 status=active"
-				 % [p[0], p[0]])
+	# Two rounds of the same two steps, which is what makes a loop.
+	for pair in [["3", "Vane"], ["2", "Ash"]]:
+		var p: Array = pair
+		api.exec("power shields %s" % p[0])
+		api.exec("send %s 4" % p[1])
 	api.exec("rec.stop")
 
 	var st := api.objects(api.exec("rec.status"))
-	ck(st.size() == 1 and int(str((st[0] as Dictionary).get("steps", "0"))) == 6,
-	   "the recorder saw the six things that were done")
-	ck(st.size() == 1 and int(str((st[0] as Dictionary).get("loop_body", "0"))) == 3,
-	   "and noticed they were the same three steps, twice")
+	ck(st.size() == 1 and int(str((st[0] as Dictionary).get("steps", "0"))) == 4,
+	   "the recorder saw the four things that were done")
+	ck(st.size() == 1 and int(str((st[0] as Dictionary).get("loop_body", "0"))) == 2,
+	   "and noticed they were the same two steps, twice")
 
 	var script := api.exec("rec.script")
-	ck(script.find("for row in work:") >= 0, "so it wrote a loop, not six lines")
-	ck(script.find("login = row[0]") >= 0, "with the things that changed pulled into variables")
-	ck(script.find("\"dept-\" + dept") >= 0,
-	   "and the rule the player was following written down, not its results")
-	ck(script.find("Gate One") >= 0 and script.find("\\\"") >= 0,
-	   "and a two-word name still carries its quotes")
+	ck(script.find("for row in work:") >= 0, "so it wrote a loop, not four lines")
+	ck(script.find("bars = row[0]") >= 0, "with the things that changed pulled into variables")
+	ck(script.find("do(\"power shields \" + bars)") >= 0,
+	   "and the command written as something a player can edit")
 
 	# THE ONE THAT MATTERS: does it run? A recorder whose output does not
 	# execute is a demo.
@@ -273,9 +272,9 @@ func _recorder_checks(desk: Node) -> void:
 	ck(ran.find("error") < 0 and ran.find("syntax") < 0,
 	   "the recorded script runs on the machine without complaint: %s" % ran.get_slice("\n", 0))
 
-	var acct := api.exec("api.call directory_01 get_account login=gtest1")
-	ck(api.ok(acct) and acct.find("Gate One") >= 0,
-	   "and it really did the work -- the account is there, name and all")
+	var rooms := api.objects(api.exec("rooms"))
+	ck(int(str((rooms[1] as Dictionary).get("bars", "0"))) == 2,
+	   "and it really did the work -- the shields are where the script left them")
 
 # THE TERMINAL IS A TERMINAL, and the two clipboards are X11's two.
 #
@@ -295,15 +294,12 @@ func _terminal_checks(desk: Node) -> void:
 
 	ck(t.get("cur") != null and t.get("caret") != null,
 	   "the line being typed lives in the transcript, not in a text box below it")
-	var nverbs: int = t.COMMANDS.size()
-	ck(nverbs > 5, "and it completes the verbs the API advertises (%d of them)" % nverbs)
 
 	var before: int = t.lines.size()
 	t.feed("uname -a\n")
-	var after_line: int = t.lines.size()
-	ck(after_line > before, "typing a command prints an answer into the screen")
+	ck(t.lines.size() > before, "typing a command prints an answer into the screen")
 
-	# `ls` WORKS NOW, and that is the whole of M4 in one assertion.
+	# `ls` WORKS, and that is the whole of the machine in one assertion.
 	#
 	# This check used to require that `ls` explain itself politely, because
 	# the terminal was an API console and a playtester typed `ls` into it
@@ -317,13 +313,13 @@ func _terminal_checks(desk: Node) -> void:
 	ck(said.find("bin") >= 0 and said.find("etc") >= 0,
 	   "and `ls /` lists a real filesystem, because this is a real shell")
 
-	# And the game is one program on that machine away.
-	t.feed("rb world.info\n")
+	# And the ship is one program on that machine away.
+	t.feed("rb rooms\n")
 	said = ""
 	n = t.lines.size()
-	for i in range(maxi(0, n - 6), n):
+	for i in range(maxi(0, n - 12), n):
 		said += str(t.lines[i]) + " "
-	ck(said.find("Harbrook") >= 0, "and `rb` reaches the company's API from the machine")
+	ck(said.find("shields") >= 0, "and `rb` reaches the ship from the machine")
 
 	# PRIMARY: select, and it is pastable with the middle button. Nothing
 	# touched the clipboard.
@@ -337,133 +333,9 @@ func _terminal_checks(desk: Node) -> void:
 	ck(str(Clip.get_primary()) == picked, "and selecting puts it in PRIMARY")
 	ck(str(Clip.get_clipboard()) == "CLIPBOARD-VALUE",
 	   "without disturbing the clipboard -- two buffers, which is the whole point")
-
 	var line_before := str(t.cur)
 	t.insert_text(str(Clip.get_primary()))
 	ck(str(t.cur) == line_before + picked, "middle-click pastes the selection into the line")
-
-# THE PATH A PERSON ACTUALLY TAKES.
-#
-# Everything above this drove the API. A player drives WIDGETS: they click a
-# form tab, type into boxes, and press Submit. Those are different code paths,
-# and the one a human uses is the one nothing had tested -- a form that
-# submitted the wrong field, or a Submit button whose hit rectangle was two
-# pixels off, would have passed every check in this file and wasted the first
-# playtest.
-#
-# So: click the tab, fill the boxes, press the button, and assert the world
-# changed.
-func _click_path(desk: Node) -> void:
-	desk._launch("appl:directory_01")
-	var win: Node = desk._find_window("directory_01")
-	if win == null:
-		ck(false, "the directory web UI opened")
-		return
-	var ui: Node = win.get_meta("content")
-	ck(ui.forms.size() >= 4, "its forms came from the spec, not from a scene")
-
-	# Click the "New account" tab, wherever the layout put it.
-	var tabs: Array = ui._tab_rects()
-	var click := InputEventMouseButton.new()
-	click.button_index = MOUSE_BUTTON_LEFT
-	click.pressed = true
-	click.position = (tabs[0] as Rect2).position + Vector2(6, 6)
-	ui._gui_input(click)
-	ck(ui.tab == 0 and ui.edits.size() >= 4,
-	   "clicking the New account tab draws its fields")
-	if ui.edits.size() < 4:
-		return
-
-	# TYPED FIELDS RENDER AS CHOICES, which is the whole of the playtest note
-	# "Edit account has no way to select what user to edit". A department is a
-	# list of departments; a status is a list of statuses; and on the EDIT
-	# form, the login is a list of the accounts that exist.
-	var pickers := 0
-	for raw in ui.edits:
-		var c: Control = raw
-		if bool(c.get_meta("picker", false)):
-			pickers += 1
-	ck(pickers >= 2, "and its typed fields are pickers, not blank boxes (%d of them)" % pickers)
-
-	var edit_tab := -1
-	for i in range(ui.forms.size()):
-		if str((ui.forms[i] as Dictionary).get("calls", "")) == "update_account":
-			edit_tab = i
-	ck(edit_tab >= 0, "the directory offers an Edit account form")
-	if edit_tab >= 0:
-		var etabs: Array = ui._tab_rects()
-		click.position = (etabs[edit_tab] as Rect2).position + Vector2(6, 6)
-		ui._gui_input(click)
-		var login_is_picker := false
-		for raw in ui.edits:
-			var c: Control = raw
-			if str(c.get_meta("field")) == "login" and bool(c.get_meta("picker", false)):
-				var ob: OptionButton = c
-				login_is_picker = ob.item_count > 1
-		ck(login_is_picker, "and Edit account lets you PICK the account, not remember it")
-		# back to New account for the submit below
-		click.position = (etabs[0] as Rect2).position + Vector2(6, 6)
-		ui._gui_input(click)
-
-	var api2: RunbookApi = ui.api
-	var before := api2.records(api2.exec("api.call directory_01 list_accounts")).size()
-
-	# A DISPLAY NAME WITH A SPACE IN IT, because that is what names are. The
-	# protocol refused one until a playtest pointed out that people have two
-	# names; it quotes now, and this is the check that keeps it quoting.
-	var values := {"login": "clicktest", "display_name": "Click Test", "dept": "engineering"}
-
-	# WHO THIS ACCOUNT IS FOR is picked from the list, not typed -- and the
-	# list is only the people who do not have one yet, which is what a
-	# user_ref means on a New Account form. The test used to name u_00001,
-	# who has had an account since before the player was hired; it is
-	# correctly no longer offered.
-	for raw in ui.edits:
-		var c0: Control = raw
-		if str(c0.get_meta("field")) == "user_ref" and bool(c0.get_meta("picker", false)):
-			var ob0: OptionButton = c0
-			ck(ob0.item_count > 1, "the user picker offers the people who need an account")
-			if ob0.item_count > 1:
-				ob0.select(1)
-
-	for raw in ui.edits:
-		var c: Control = raw
-		var fname := str(c.get_meta("field"))
-		if not values.has(fname):
-			continue
-		if bool(c.get_meta("picker", false)):
-			var ob: OptionButton = c
-			# A picker's LABEL is for a person -- "Alma Barrow  (u_00041,
-			# sales)" -- and its VALUE is what the API wants. Matching on
-			# "contains" rather than "starts with" is the test learning the
-			# same lesson the player does: the label is not the value.
-			for i in range(ob.item_count):
-				if ob.get_item_text(i).find(str(values[fname])) >= 0:
-					ob.select(i)
-		else:
-			var le: LineEdit = c
-			le.text = str(values[fname])
-
-	# The Submit button, hit where it is drawn rather than where we think it is.
-	click.position = ui._submit_rect().position + Vector2(6, 6)
-	ui._gui_input(click)
-	ck(ui.result_good, "pressing Submit works: %s" % ui.result_line)
-
-	var after := api2.records(api2.exec("api.call directory_01 list_accounts")).size()
-	ck(after == before + 1, "and there is one more account in the directory than there was")
-
-	var made := api2.objects(api2.exec("api.call directory_01 get_account login=clicktest"))
-	ck(made.size() == 1 and str((made[0] as Dictionary).get("display_name", "")) == "Click Test",
-	   "and the display name kept its space")
-
-	# The same button, again, on the same values. A player WILL do this -- and
-	# create_account is idempotent, so it must not be an error and must not
-	# make a second account.
-	click.position = ui._submit_rect().position + Vector2(6, 6)
-	ui._gui_input(click)
-	var again := api2.records(api2.exec("api.call directory_01 list_accounts")).size()
-	ck(ui.result_good and again == after,
-	   "and pressing it twice is not an error and does not make two")
 
 func _done() -> void:
 	print("client_test: %d checks, %d failures" % [checks, failures])

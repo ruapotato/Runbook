@@ -36,8 +36,7 @@ const UiFont := preload("res://scripts/uifont.gd")
 # glyphs is a set that gave up.
 const Icons  := preload("res://scripts/icons.gd")
 const Clip   := preload("res://scripts/clip.gd")
-const Queue  := preload("res://scripts/queue.gd")
-const WebUI  := preload("res://scripts/webui.gd")
+const Bridge := preload("res://scripts/bridge.gd")
 # NOMINAL's terminal, not the one I wrote and then had to throw away. See the
 # note at the top of that file.
 const Term   := preload("res://scripts/terminal.gd")
@@ -145,7 +144,7 @@ func _ready() -> void:
 	resized.connect(_relayout_desktop)
 	_relayout_desktop()
 	if boot_error == "":
-		_launch("Queue")
+		_launch("Bridge")
 
 var _clock_cache: Dictionary = {}
 var _clock_age := 99.0
@@ -154,14 +153,45 @@ var _clock_flash := 0.0
 var _rec_rect := Rect2()
 var _rec_steps := -1          # -1 when not recording
 
+# THE FIGHT RUNS IN REAL TIME, AND IN FIXED STEPS.
+#
+# The desktop is the only thing that advances the ship: it calls `tick`, which
+# is the same command a player can type and a script can send. Nothing in the
+# world moves on its own.
+#
+# THE STEP IS FIXED AT A FIFTIETH OF A SECOND and the remainder is carried, so
+# the fight a player sees on a 144Hz monitor is the same fight, tick for tick,
+# as the one the balance harness ran headless. Passing the frame delta
+# straight through would make the game's arithmetic a function of the frame
+# rate -- which is how determinism dies quietly, and how the fastest computer
+# in the room ends up playing a slightly different game from everybody else.
+const STEP := 0.02
+const MAX_CATCHUP := 10          # steps per frame; past this we drop time
+
+var _accum := 0.0
+
+func _tick_world(dt: float) -> void:
+	_accum += minf(dt, 0.25)
+	var steps := 0
+	while _accum >= STEP and steps < MAX_CATCHUP:
+		api.exec("tick %.4f" % STEP)
+		_accum -= STEP
+		steps += 1
+	if steps == 0:
+		return
+	# Only the bridge repaints per tick. A file browser does not change
+	# because the ship took a hit, and repainting everything sixty times a
+	# second would cost more than the fight does.
+	var b := _find_window("Bridge")
+	if b != null and is_instance_valid(b):
+		var bc: Node = b.get_meta("content")
+		if bc.has_method("refresh"):
+			bc.refresh()
+
 func _process(dt: float) -> void:
-	# THE CLOCK ONLY MOVES WHEN YOU SPEND TIME, and that is the design (§10):
-	# the day advances at the speed of the fiction, not the wall. But a bar
-	# that never moves while you are reading a ticket looks broken rather than
-	# paused, so when it DOES move it flashes -- which is also the only
-	# feedback the desktop gives that a form cost you two minutes.
 	if api == null or top == null:
 		return
+	_tick_world(dt)
 	_clock_age += dt
 	_cwd_age += dt
 	if _clock_age > 0.25:
@@ -174,10 +204,10 @@ func _process(dt: float) -> void:
 					_rec_steps = int(str(r0.get("steps", "0")))
 				else:
 					_rec_steps = -1
-		var info: Array = api.objects(api.exec("world.info"))
+		var info: Array = api.objects(api.exec("status"))
 		if info.size() > 0:
 			_clock_cache = info[0]
-			var m := int(str(_clock_cache.get("minute", "0")))
+			var m := int(str(_clock_cache.get("clock", "0")))
 			if _last_minute >= 0 and m != _last_minute:
 				_clock_flash = 0.9
 			_last_minute = m
@@ -240,7 +270,7 @@ func _icon_rects() -> Array:
 # system, mail is a conversation, a file server is folders.
 static func _icon_for(kind: String) -> String:
 	match kind:
-		"Queue":      return "notes"
+		"Bridge":     return "sysmon"
 		"Terminal":   return "term"
 		"directory":  return "svc"
 		"mail":       return "chat"
@@ -250,14 +280,10 @@ static func _icon_for(kind: String) -> String:
 
 func _desktop_items() -> Array:
 	_ensure()
-	var out := [{"label": "Queue", "kind": "Queue", "icon": "notes"},
-				{"label": "Terminal", "kind": "Terminal", "icon": "term"},
-				{"label": "Files", "kind": "Files", "icon": "files"}]
-	for raw in api.objects(api.exec("appl.list")):
-		var a: Dictionary = raw
-		out.append({"label": str(a.get("id", "?")), "kind": "appl:%s" % a.get("id", "?"),
-					"icon": _icon_for(str(a.get("kind", "")))})
-	return out
+	return [{"label": "Bridge", "kind": "Bridge", "icon": "sysmon"},
+			{"label": "Terminal", "kind": "Terminal", "icon": "term"},
+			{"label": "Files", "kind": "Files", "icon": "files"},
+			{"label": "Editor", "kind": "Editor", "icon": "editor"}]
 
 func _draw_desktop_icons() -> void:
 	var items := _desktop_items()
@@ -303,35 +329,39 @@ func _draw_top() -> void:
 			Color.WHITE if i == menu_open else PANEL_INK)
 
 	# The clock, MATE-style: right-hand end of the top panel. Here it is the
-	# in-game clock, because the day budget is the only currency there is and
-	# a player should never have to go looking for how much of it is left.
+	# fight's clock and the ship's hull, because those are the two numbers a
+	# player checks without wanting to look away from what they are doing.
 	if not _clock_cache.is_empty():
 		var i0: Dictionary = _clock_cache
-		var mins := int(str(i0.get("minute", "0")))
-		var left := int(str(i0.get("minutes_left", "480")))
+		var secs := int(str(i0.get("clock", "0")))
+		var hull := int(str(i0.get("hull", "0")))
+		var hull_max: int = maxi(1, int(str(i0.get("hull_max", "16"))))
+		var paused := str(i0.get("paused", "true")) == "true"
 		# THE RIGHT-HAND END, MEASURED RATHER THAN GUESSED, and laid out from
 		# the edge inwards. The first version put the bar at a fixed offset
-		# from the clock and the label at a fixed offset from the bar, and
-		# "480 min left" came out as "480 min lef" with the bar painted over
-		# the last letter. Panels are the one place where measuring is not
-		# optional: the strings change every minute.
-		var clock := "Day %s  %02d:%02d" % [i0.get("day", "?"), 9 + int(mins / 60.0), mins % 60]
+		# from the clock and the label at a fixed offset from the bar, and the
+		# last letter came out under the bar. Panels are the one place where
+		# measuring is not optional: the strings change every second.
+		var clock := "%02d:%02d" % [secs / 60, secs % 60]
+		if paused:
+			clock = "PAUSED"
 		var cw := mono.get_string_size(clock, HORIZONTAL_ALIGNMENT_LEFT, -1, 12).x
-		var label := "%d min left" % left
+		var label := "hull %d" % hull
 		var lw := mono.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, 11).x
 		var x := top.size.x - 10.0
-		top.draw_string(mono, Vector2(x - cw, 17), clock, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, PANEL_INK)
+		top.draw_string(mono, Vector2(x - cw, 17), clock, HORIZONTAL_ALIGNMENT_LEFT, -1, 12,
+			Color("#8a5a12") if paused else PANEL_INK)
 		x -= cw + 12.0
 		top.draw_line(Vector2(x, 4), Vector2(x, TOP_H - 4), PANEL_EDGE, 1.0)
 		x -= 10.0
 
-		# The day, as a bar, in the notification area. It goes amber under the
-		# last hour -- which is not a warning about failure, because there is
-		# no failure here. It is a clock.
+		# The hull, as a bar, in the notification area. It goes red under a
+		# third, which is not a warning about failure -- it is the failure,
+		# arriving slowly enough to do something about.
 		var bw := 74.0
 		top.draw_rect(Rect2(x - bw, 7, bw, 11), Color("#c9c5be"))
-		var frac: float = clampf(float(left) / 480.0, 0.0, 1.0)
-		var barcol: Color = MENU_HOT if left > 60 else Color("#d98a2b")
+		var frac: float = clampf(float(hull) / float(hull_max), 0.0, 1.0)
+		var barcol: Color = MENU_HOT if frac > 0.34 else Color("#c0453b")
 		if _clock_flash > 0.0:
 			barcol = barcol.lerp(Color.WHITE, _clock_flash * 0.7)
 		top.draw_rect(Rect2(x - bw, 7, bw * frac, 11), barcol)
@@ -402,20 +432,11 @@ const GAMES := [
 func _menu_items(which: int) -> Array:
 	match which:
 		0:
-			var apps := [{"label": "Ticket queue", "kind": "Queue", "icon": "notes"},
+			var apps := [{"label": "Bridge", "kind": "Bridge", "icon": "sysmon"},
 						 {"label": "Terminal", "kind": "Terminal", "icon": "term"},
 						 {"label": "Files", "kind": "Files", "icon": "files"},
 						 {"label": "Script editor", "kind": "Editor", "icon": "editor"},
 						 {"label": "", "kind": "", "icon": "app"}]
-			# The appliances the company owns, discovered from the API rather
-			# than listed -- so buying a second mail server puts it in the
-			# menu, which is Act III arriving in the furniture.
-			for raw in api.objects(api.exec("appl.list")):
-				var a: Dictionary = raw
-				apps.append({"label": str(a.get("id", "?")), "kind": "appl:%s" % a.get("id", "?"),
-							 "icon": _icon_for(str(a.get("kind", ""))),
-							 "sub": str(a.get("model", ""))})
-			apps.append({"label": "", "kind": "", "icon": "app"})
 			apps.append_array(GAMES)
 			return apps
 		1:
@@ -430,10 +451,10 @@ func _menu_items(which: int) -> Array:
 					{"label": "", "kind": "", "icon": "app"},
 					{"label": "Computer", "kind": "go:/", "icon": "sysmon"}]
 		_:
-			return [{"label": "Go home (end the day)", "kind": "sys:day", "icon": "clock"},
-					{"label": "How the queue works", "kind": "sys:help", "icon": "manual"},
+			return [{"label": "Stop time", "kind": "sys:pause", "icon": "clock"},
+					{"label": "How the fight works", "kind": "sys:help", "icon": "manual"},
 					{"label": "The API, in full", "kind": "sys:api", "icon": "term"},
-					{"label": "Where the org stands", "kind": "sys:stats", "icon": "sysmon"},
+					{"label": "The ship, as one object", "kind": "sys:stats", "icon": "sysmon"},
 					{"label": "Quit", "kind": "sys:quit", "icon": "app"}]
 
 func _menu_rect() -> Rect2:
@@ -809,8 +830,9 @@ func _find_window(key: String) -> Control:
 
 func _activate(kind: String) -> void:
 	match kind:
-		"sys:day":
-			api.exec("day.advance 1")
+		"sys:pause":
+			api.exec("pause")
+			_echo_command("pause")
 			for raw in windows:
 				var w: Control = raw
 				if is_instance_valid(w):
@@ -827,13 +849,13 @@ func _activate(kind: String) -> void:
 			var t := _find_window("Terminal")
 			if t != null:
 				var tc: Node = t.get_meta("content")
-				tc.feed("help\n")
+				tc.feed("rb help\n")
 		"sys:stats":
 			_launch("Terminal")
 			var t2 := _find_window("Terminal")
 			if t2 != null:
 				var tc2: Node = t2.get_meta("content")
-				tc2.feed("ticket.stats\n")
+				tc2.feed("rb ship\n")
 		"sys:quit":
 			get_tree().quit()
 		_:
@@ -864,37 +886,49 @@ func _activate(kind: String) -> void:
 # acceptance checks, because the checks explain themselves in the queue, and
 # it does not hint at Act II, because finding the API is the discovery the
 # whole design is built around.
-const HELP_TEXT := """RUNBOOK
+const HELP_TEXT := """THE KESTREL
 
-You are the entire IT department of Harbrook Industries.
+A raider has caught you. There is one ship, one fight, and no second chance
+at it -- but the ship's computer keeps its files between deaths, so anything
+you write survives you.
 
-Forty people work here. More start every week, and each of them arrives as a
-ticket in your queue with nothing set up: no account, no mailbox, no home
-folder, no access.
+THE BRIDGE
+  Eight rooms. Click the little amber squares in a room to give that system
+  power; click a lit one to take it back. The reactor has eight bars and
+  every system wants them, so the whole game is deciding which.
 
-THE QUEUE
-  Open it from Applications. Click a ticket and press Check, and the game
-  shows you every condition that has to be true before it closes -- and, for
-  the ones that are not true yet, why.
+  Click a crew member, then click a room, to send them there. What they do
+  when they arrive is decided by where they are: a room on fire gets put
+  out, a damaged system gets repaired, a working one gets manned.
 
-  There is no Resolve button. A ticket closes when the world agrees the work
-  is done, and not before. Nothing you can say to the game will close one.
+  Right-click a room to seal its door. A shut door stops fire spreading and
+  holds air in.
 
-THE APPLIANCES
-  Places lists the machines this company runs: the directory, the mail
-  server, the file server. Each has forms. Filling one in costs two minutes of
-  your day, and you get 480 minutes.
+  SPACE stops time. Thinking is free; FTL was right about that.
+  F fires the gun, when it is charged.
 
-THE DAY
-  Top right. When it runs out the day ends and tomorrow's arrivals join
-  whatever you did not finish. That is the only punishment there is -- there
-  is no losing this game, only falling further behind.
+THE CONSOLE
+  Under the ship. Every single thing you click prints there as a command --
+  `power shields 3`, `send Vane 2`, `fire`. Those are not descriptions of
+  what you did. They are what you did.
 
-  System > Go home ends the day early.
+  So you can type them instead. Open the Terminal and try `rb power shields
+  3`. It is the same command, and your clicks show up in that window too.
 
-WHAT YOU ARE AIMED AT
-  The company doubles, and then doubles again. Doing this by hand stops
-  working long before that. How you deal with it is up to you."""
+THE COMPUTER
+  It is a real machine with a real shell and real files. `py` is a Python
+  subset; /root/examples has scripts that already work.
+
+  `run /root/examples/gunner.py` starts a script running INSIDE the fight.
+  It watches the gun and fires it the moment it is charged, forever, while
+  you deal with the fire in the engine room.
+
+WHAT IT COSTS
+  Scripts run on the ship's computer, and the computer runs on reactor bars
+  -- the same bars the shields want. With no power in the computer, your
+  automation does nothing at all.
+
+  That is the game. Automation is a trade, not a cheat."""
 
 # START, or STOP AND SHOW YOU WHAT YOU DID.
 #
@@ -964,6 +998,24 @@ func _draw_help(c: Control) -> void:
 var _cwd_cache := "/"
 var _cwd_age := 99.0
 
+# CLICKS ARRIVE IN THE TERMINAL AS TEXT.
+#
+# This is the premise, made literal. A player with a shell open watches the
+# lines their own clicking sends -- `power shields 3`, `send Vane 2`, `fire`
+# -- scroll past in the same window where they could have typed them. Nobody
+# has to be told that the interface is a front end for a command language;
+# they watch it be one.
+#
+# It is printed with a marker rather than a prompt, because these lines were
+# not typed here and pretending otherwise would put a lie in the scrollback.
+func _echo_command(line: String) -> void:
+	var t := _find_window("Terminal")
+	if t == null or not is_instance_valid(t):
+		return
+	var tc: Node = t.get_meta("content")
+	if tc.has_method("write"):
+		tc.write("[bridge] rb %s\n" % line)
+
 func _shell_prompt() -> String:
 	if api != null and _cwd_age > 0.5:
 		_cwd_age = 0.0
@@ -975,9 +1027,7 @@ func _shell_prompt() -> String:
 func _launch(kind: String) -> void:
 	_ensure()
 	var key := kind
-	if kind.begins_with("appl:"):
-		key = kind.substr(5)
-	elif kind.begins_with("game:"):
+	if kind.begins_with("game:"):
 		for raw in GAMES:
 			var g: Dictionary = raw
 			if str(g["kind"]) == kind:
@@ -994,10 +1044,18 @@ func _launch(kind: String) -> void:
 	cascade = (cascade + 1) % 7
 	var at := Vector2(60 + cascade * 26, TOP_H + 18 + cascade * 22)
 
-	if kind == "Queue":
-		var q := Queue.new()
-		q.setup(api)
-		_win("Queue", Rect2(at, Vector2(760, 470)), q, "notes")
+	if kind == "Bridge":
+		var b := Bridge.new()
+		# WHERE THE COMMANDS GO. The bridge prints every command it sends into
+		# its own console strip, and hands it here as well so the desktop can
+		# put it somewhere the player is already looking -- the terminal, if
+		# one is open. Somebody who has a shell up sees their clicks arrive in
+		# it as text, which is the entire pitch of this game in one detail.
+		b.setup(api, func(line: String) -> void: _echo_command(line))
+		b.focus_mode = Control.FOCUS_ALL
+		_win("Bridge", Rect2(at, Vector2(860, 560)), b, "sysmon")
+		if is_inside_tree():
+			b.grab_focus()
 	elif kind == "Terminal":
 		var t := Term.new()
 		# The terminal knows nothing about this game: it takes a line, hands
@@ -1018,10 +1076,13 @@ func _launch(kind: String) -> void:
 		t.on_command = func(line: String) -> String: return api.sh(line)
 		t.prompt_fn  = func() -> String: return _shell_prompt()
 		t.banner = PackedStringArray([
-			"NomnixOS 11.4 — your workstation.",
+			"NomnixOS 11.4 — the Kestrel's computer.",
 			"",
-			"This is a real machine: ls, cat, grep, pipes, for loops, scripts in files.",
-			"`rb` is the company's API from here — try `rb help`, then `rb ticket.list open`.",
+			"A real machine: ls, cat, grep, pipes, for loops, scripts in files.",
+			"`rb` is the ship from here — `rb help`, `rb rooms`, `rb power shields 3`.",
+			"`py` is a Python subset. /root/examples has scripts that already work.",
+			"",
+			"Anything you click on the bridge shows up here as the line that did it.",
 			"",
 		])
 		t._load_commands()
@@ -1040,15 +1101,6 @@ func _launch(kind: String) -> void:
 		fb.setup(api)
 		fb.on_edit = func(p: String) -> void: _edit_file(p)
 		_win("Files", Rect2(at, Vector2(560, 430)), fb, "files")
-	elif kind.begins_with("appl:"):
-		var id := kind.substr(5)
-		var u := WebUI.new()
-		u.setup(api, id)
-		var info := api.objects(api.exec("appl.info %s" % id))
-		var ik := "app"
-		if info.size() > 0:
-			ik = _icon_for(str((info[0] as Dictionary).get("kind", "")))
-		_win(id, Rect2(at, Vector2(640, 400)), u, ik)
 	elif kind.begins_with("game:"):
 		# The games are lifted wholesale and know nothing about this game.
 		# They are Controls that draw themselves and take input, which is all a
