@@ -228,6 +228,59 @@ func _desktop_checks() -> void:
 	ck(desk._find_window("Solitaire") != null, "the desktop has solitaire on it, like every desktop")
 
 	_click_path(desk)
+	_terminal_checks(desk)
+
+# THE TERMINAL IS A TERMINAL, and the two clipboards are X11's two.
+#
+# Both of these came out of the first playtest -- "the terminal is not the one
+# from NOMINAL, it has an input box at the bottom rather than being inline",
+# and "we need copy paste, and highlight buffer with middle mouse paste like
+# X11, so you get 2 copy buffers just like in X11". Neither is the sort of
+# thing that fails loudly when it breaks; it just quietly stops feeling right.
+# So they are asserted.
+func _terminal_checks(desk: Node) -> void:
+	desk._launch("Terminal")
+	var win: Node = desk._find_window("Terminal")
+	if win == null:
+		ck(false, "the terminal opened")
+		return
+	var t: Node = win.get_meta("content")
+
+	ck(t.get("cur") != null and t.get("caret") != null,
+	   "the line being typed lives in the transcript, not in a text box below it")
+	var nverbs: int = t.COMMANDS.size()
+	ck(nverbs > 5, "and it completes the verbs the API advertises (%d of them)" % nverbs)
+
+	var before: int = t.lines.size()
+	t.feed("world.info\n")
+	var after_line: int = t.lines.size()
+	ck(after_line > before, "typing a verb prints an answer into the screen")
+
+	# `ls` is not a verb here, and the answer has to say what this is rather
+	# than "unknown verb: ls" -- a playtester typed it within seconds.
+	t.feed("ls\n")
+	var said := ""
+	var n: int = t.lines.size()
+	for i in range(maxi(0, n - 6), n):
+		said += str(t.lines[i]) + " "
+	ck(said.find("not a shell") >= 0, "and `ls` explains what this console is instead of just refusing")
+
+	# PRIMARY: select, and it is pastable with the middle button. Nothing
+	# touched the clipboard.
+	var Clip: GDScript = load("res://scripts/clip.gd")
+	Clip.set_clipboard("CLIPBOARD-VALUE")
+	t.sel_from = Vector2i(0, 0)
+	t.sel_to = Vector2i(0, 6)
+	var picked := str(t._selected_text())
+	ck(picked.length() == 6, "dragging over the transcript selects text")
+	Clip.set_primary(picked)
+	ck(str(Clip.get_primary()) == picked, "and selecting puts it in PRIMARY")
+	ck(str(Clip.get_clipboard()) == "CLIPBOARD-VALUE",
+	   "without disturbing the clipboard -- two buffers, which is the whole point")
+
+	var line_before := str(t.cur)
+	t.insert_text(str(Clip.get_primary()))
+	ck(str(t.cur) == line_before + picked, "middle-click pastes the selection into the line")
 
 # THE PATH A PERSON ACTUALLY TAKES.
 #
@@ -256,19 +309,63 @@ func _click_path(desk: Node) -> void:
 	click.pressed = true
 	click.position = (tabs[0] as Rect2).position + Vector2(6, 6)
 	ui._gui_input(click)
-	ck(ui.tab == 0 and ui.edits.size() == 4,
-	   "clicking the New account tab draws its four fields")
-	if ui.edits.size() != 4:
+	ck(ui.tab == 0 and ui.edits.size() >= 4,
+	   "clicking the New account tab draws its fields")
+	if ui.edits.size() < 4:
 		return
+
+	# TYPED FIELDS RENDER AS CHOICES, which is the whole of the playtest note
+	# "Edit account has no way to select what user to edit". A department is a
+	# list of departments; a status is a list of statuses; and on the EDIT
+	# form, the login is a list of the accounts that exist.
+	var pickers := 0
+	for raw in ui.edits:
+		var c: Control = raw
+		if bool(c.get_meta("picker", false)):
+			pickers += 1
+	ck(pickers >= 2, "and its typed fields are pickers, not blank boxes (%d of them)" % pickers)
+
+	var edit_tab := -1
+	for i in range(ui.forms.size()):
+		if str((ui.forms[i] as Dictionary).get("calls", "")) == "update_account":
+			edit_tab = i
+	ck(edit_tab >= 0, "the directory offers an Edit account form")
+	if edit_tab >= 0:
+		var etabs: Array = ui._tab_rects()
+		click.position = (etabs[edit_tab] as Rect2).position + Vector2(6, 6)
+		ui._gui_input(click)
+		var login_is_picker := false
+		for raw in ui.edits:
+			var c: Control = raw
+			if str(c.get_meta("field")) == "login" and bool(c.get_meta("picker", false)):
+				var ob: OptionButton = c
+				login_is_picker = ob.item_count > 1
+		ck(login_is_picker, "and Edit account lets you PICK the account, not remember it")
+		# back to New account for the submit below
+		click.position = (etabs[0] as Rect2).position + Vector2(6, 6)
+		ui._gui_input(click)
 
 	var api2: RunbookApi = ui.api
 	var before := api2.records(api2.exec("api.call directory_01 list_accounts")).size()
 
+	# A DISPLAY NAME WITH A SPACE IN IT, because that is what names are. The
+	# protocol refused one until a playtest pointed out that people have two
+	# names; it quotes now, and this is the check that keeps it quoting.
 	var values := {"login": "clicktest", "user_ref": "u_00001",
-				   "display_name": "Click_Test", "dept": "engineering"}
+				   "display_name": "Click Test", "dept": "engineering"}
 	for raw in ui.edits:
-		var le: LineEdit = raw
-		le.text = str(values.get(str(le.get_meta("field")), ""))
+		var c: Control = raw
+		var fname := str(c.get_meta("field"))
+		if not values.has(fname):
+			continue
+		if bool(c.get_meta("picker", false)):
+			var ob: OptionButton = c
+			for i in range(ob.item_count):
+				if ob.get_item_text(i).begins_with(str(values[fname])):
+					ob.select(i)
+		else:
+			var le: LineEdit = c
+			le.text = str(values[fname])
 
 	# The Submit button, hit where it is drawn rather than where we think it is.
 	click.position = ui._submit_rect().position + Vector2(6, 6)
@@ -277,6 +374,10 @@ func _click_path(desk: Node) -> void:
 
 	var after := api2.records(api2.exec("api.call directory_01 list_accounts")).size()
 	ck(after == before + 1, "and there is one more account in the directory than there was")
+
+	var made := api2.objects(api2.exec("api.call directory_01 get_account login=clicktest"))
+	ck(made.size() == 1 and str((made[0] as Dictionary).get("display_name", "")) == "Click Test",
+	   "and the display name kept its space")
 
 	# The same button, again, on the same values. A player WILL do this -- and
 	# create_account is idempotent, so it must not be an error and must not

@@ -48,6 +48,24 @@ server and it appears in the menu.
 beige and answers in XML. There is no hand-built screen for any appliance, and
 `--health` refuses a form that offers a field its endpoint will not accept.
 
+**Fields are typed**, so the generated forms offer choices rather than blank
+boxes: an enum lists its values, a `ref` lists what is actually in the
+collection it points at, and a key field on an edit-or-delete endpoint lists
+the records that exist. You pick an account to edit; you never have to have
+memorised its login. A new appliance gets all of that for free, and the API is
+unchanged — a picker sends the same `field=value` a box would.
+
+**Two clipboards, X11's two.** Drag over text and it is in PRIMARY with no
+keystroke; middle-click pastes it. Ctrl-Shift-C and Ctrl-Shift-V use the
+system clipboard. They are independent, so a login can sit in one while a path
+sits in the other. Where the platform has a real PRIMARY, it *is* the system's
+— select in the terminal and middle-click into a browser.
+
+**The terminal is NOMINAL's terminal**: one buffer, the line you are typing
+drawn where it will land, history, reverse-i-search, and Tab completion driven
+by what the API says exists — the verbs `help` advertises, the appliances
+installed, the endpoints each one has.
+
 **There is no Resolve button** and there is never going to be one. The queue
 has a Check button, which asks the world; every failing check says why.
 

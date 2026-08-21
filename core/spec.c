@@ -27,6 +27,18 @@ const char *op_name(EndpointOp op)
     return (op >= 0 && op < OP__N) ? n[op] : "?";
 }
 
+const char *field_type_name(FieldType t)
+{
+    static const char *const n[FT__N] = { "text", "enum", "ref", "key" };
+    return (t >= 0 && t < FT__N) ? n[t] : "text";
+}
+
+const FieldSpec *coll_field(const CollSpec *cs, const char *name)
+{
+    for (int i = 0; i < cs->nfield; i++) if (!strcmp(cs->fs[i].name, name)) return &cs->fs[i];
+    return NULL;
+}
+
 const char *arch_name(VendorArch a)
 {
     static const char *const n[VEN__N] = { "good", "cheap", "legacy", "flaky" };
@@ -48,7 +60,17 @@ static bool sfail(Ctx *c, const char *fmt, ...)
     return false;
 }
 
-static void cpstr(char *dst, size_t cap, const char *src) { snprintf(dst, cap, "%s", src ? src : ""); }
+/* snprintf("%s") is undefined when source and destination overlap, and one
+ * caller copies a field's name into the parallel name table -- both inside
+ * the same struct. gcc spotted it; it would have been a very quiet bug. */
+static void cpstr(char *dst, size_t cap, const char *src)
+{
+    if (!src) { dst[0] = 0; return; }
+    size_t n = strlen(src);
+    if (n >= cap) n = cap - 1;
+    memmove(dst, src, n);
+    dst[n] = 0;
+}
 
 /* Copy a sequence of scalars into a fixed table, refusing to overflow rather
  * than truncating: an endpoint that quietly loses its last field is a bug
@@ -204,7 +226,49 @@ static bool load_model(Ctx *c, const YNode *root, Model *m)
             memset(cs, 0, sizeof *cs);
             cpstr(cs->name, sizeof cs->name, st->pair[i].key);
             const YNode *cn = st->pair[i].val;
-            if (!seq_into(c, y_get(cn, "fields"), cs->field, SPEC_MAX_FIELDS, &cs->nfield, "fields")) return false;
+            /* Fields may be bare names or mappings. Both, in the same list,
+             * because most fields are just text and saying so is noise. */
+            const YNode *fl = y_get(cn, "fields");
+            size_t nf = y_count(fl);
+            if ((int)nf > SPEC_MAX_FIELDS) return sfail(c, "collection %s has too many fields", cs->name);
+            cs->nfield = 0;
+            for (size_t f = 0; f < nf; f++) {
+                const YNode *fn = y_at(fl, f);
+                FieldSpec *fsp = &cs->fs[cs->nfield];
+                memset(fsp, 0, sizeof *fsp);
+                if (fn && fn->kind == Y_SCALAR) {
+                    cpstr(fsp->name, RB_NAME_MAX, fn->scalar);
+                    fsp->type = FT_TEXT;
+                } else if (fn && fn->kind == Y_MAP) {
+                    cpstr(fsp->name, RB_NAME_MAX, y_str(fn, "name", ""));
+                    const char *ty = y_str(fn, "type", "text");
+                    if      (!strcmp(ty, "text")) fsp->type = FT_TEXT;
+                    else if (!strcmp(ty, "enum")) fsp->type = FT_ENUM;
+                    else if (!strcmp(ty, "ref"))  fsp->type = FT_REF;
+                    else return sfail(c, "collection %s: field %s has type '%s'; "
+                                         "it must be text, enum or ref", cs->name, fsp->name, ty);
+                    cpstr(fsp->of, RB_NAME_MAX, y_str(fn, "of", ""));
+                    const YNode *vals = y_get(fn, "values");
+                    size_t nv = y_count(vals);
+                    if ((int)nv > SPEC_MAX_ENUM)
+                        return sfail(c, "collection %s: field %s has too many values", cs->name, fsp->name);
+                    for (size_t v = 0; v < nv; v++) {
+                        const YNode *vn = y_at(vals, v);
+                        if (!vn || vn->kind != Y_SCALAR)
+                            return sfail(c, "collection %s: field %s has a bad value list", cs->name, fsp->name);
+                        cpstr(fsp->value[fsp->nvalue++], RB_NAME_MAX, vn->scalar);
+                    }
+                    if (fsp->type == FT_ENUM && !fsp->nvalue)
+                        return sfail(c, "collection %s: field %s is an enum with no values", cs->name, fsp->name);
+                    if (fsp->type == FT_REF && !fsp->of[0])
+                        return sfail(c, "collection %s: field %s is a ref with no 'of:'", cs->name, fsp->name);
+                } else {
+                    return sfail(c, "collection %s: a field is neither a name nor a mapping", cs->name);
+                }
+                if (!fsp->name[0]) return sfail(c, "collection %s: a field has no name", cs->name);
+                cpstr(cs->field[cs->nfield], RB_NAME_MAX, fsp->name);
+                cs->nfield++;
+            }
             if (!seq_into(c, y_get(cn, "key"),    cs->key,   SPEC_MAX_KEYS,   &cs->nkey,   "key"))    return false;
             /* Default yes: reuse is the ordinary case, and an author who
              * wants the unforgiving one should have to say so. */
@@ -227,9 +291,17 @@ static bool load_model(Ctx *c, const YNode *root, Model *m)
                                 "the first collection is what an instance's load is measured by",
                              cs->name);
             if (!cs->nfield) return sfail(c, "collection %s has no fields", cs->name);
-            for (int k = 0; k < cs->nkey; k++)
+            for (int k = 0; k < cs->nkey; k++) {
                 if (!in_table(cs->field, cs->nfield, cs->key[k]))
                     return sfail(c, "collection %s: key '%s' is not one of its fields", cs->name, cs->key[k]);
+                /* The key is what a form has to let you PICK when the endpoint
+                 * edits or deletes an existing record. Marked here, once, from
+                 * the key declaration -- so nobody has to remember to say it
+                 * twice and no spec can get the two out of step. */
+                for (int f = 0; f < cs->nfield; f++)
+                    if (!strcmp(cs->fs[f].name, cs->key[k]) && cs->fs[f].type == FT_TEXT)
+                        cs->fs[f].type = FT_KEY;
+            }
         }
     }
 

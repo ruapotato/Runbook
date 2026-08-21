@@ -6,6 +6,14 @@
 # (handoff §8.2) -- add_member references accounts and groups, so a script
 # that adds the membership first fails loudly rather than leaving a half-made
 # person behind.
+#
+# ACCESS LIVES HERE TOO, and it is modelled the way every directory models it:
+# people are not given applications, GROUPS are, and people are given groups.
+# Two people with the same job get the same access because they are in the
+# same group, and the day the finance system needs a new permission you change
+# one entitlement rather than four hundred accounts. That indirection is the
+# entire reason directories exist, and a game about running one that skipped
+# it would be teaching the wrong shape.
 id: veridian_dx
 model: Veridian Ledger DX
 vendor: veridian
@@ -13,22 +21,50 @@ kind: directory
 interfaces: [web, api]
 capacity: 600              # users served at nominal; past this, latency climbs (§5)
 credential_days: 0         # the directory authenticates the operator, not a service account
-doc: "The directory of record. Accounts, groups and memberships for the whole org."
+doc: "The directory of record. Accounts, groups, memberships and application access for the whole org."
 
 state:
   accounts:
     key: [login]
-    scope: service       # identity, not storage; see spec.h
     index: user_ref        # what acceptance checks ask by; see spec.h
+    scope: service         # identity, not storage; see spec.h
     reuse_key: no          # a login is never free again; see spec.h
-    fields: [login, user_ref, display_name, dept, status]
+    fields:
+      - login
+      - { name: user_ref, type: ref, of: users }
+      - display_name
+      - { name: dept, type: ref, of: departments }
+      - { name: status, type: enum, values: [active, suspended, contractor, leaver] }
+
   groups:
     replicated: yes      # the org's, not this box's; see spec.h
     key: [name]
-    fields: [name, dept]
+    fields:
+      - name
+      - { name: kind, type: enum, values: [department, role, access] }
+      - { name: dept, type: ref, of: departments }
+      - description
+
   memberships:
     key: [login, group]
-    fields: [login, group]
+    fields:
+      - { name: login, type: ref, of: accounts }
+      - { name: group, type: ref, of: groups }
+
+  apps:
+    replicated: yes      # the estate's application catalogue, same on every server
+    key: [name]
+    fields:
+      - name
+      - description
+
+  entitlements:
+    replicated: yes      # who-may-use-what is policy, not storage
+    key: [group, app]
+    fields:
+      - { name: group, type: ref, of: groups }
+      - { name: app, type: ref, of: apps }
+      - { name: access, type: enum, values: [read, write, admin] }
 
 endpoints:
   - id: list_accounts
@@ -86,21 +122,33 @@ endpoints:
   - id: list_groups
     op: list
     collection: groups
+    filter: kind
     latency_ms: 120
-    doc: "Every group the directory knows."
+    doc: "Every group the directory knows, or every group of one kind."
     examples:
       - "api.call {inst} list_groups"
+      - "api.call {inst} list_groups kind=access"
 
   - id: create_group
     op: create
     collection: groups
-    fields: [name, dept]
+    fields: [name, kind, dept, description]
     required: [name]
     idempotent_on: [name]
     latency_ms: 300
     doc: "Create a group. Creating one that exists is not an error."
     examples:
-      - "api.call {inst} create_group name=dept-engineering dept=engineering"
+      - "api.call {inst} create_group name=role-oncall kind=role description=\"Carries the pager\""
+
+  - id: delete_group
+    op: delete
+    collection: groups
+    fields: [name]
+    required: [name]
+    latency_ms: 260
+    doc: "Remove a group. Its memberships and entitlements are not tidied up for you."
+    examples:
+      - "api.call {inst} delete_group name=role-oncall"
 
   - id: list_members
     op: list
@@ -135,11 +183,62 @@ endpoints:
     examples:
       - "api.call {inst} remove_member login={login} group=dept-engineering"
 
+  - id: list_apps
+    op: list
+    collection: apps
+    latency_ms: 120
+    doc: "The application catalogue: everything access can be granted to."
+    examples:
+      - "api.call {inst} list_apps"
+
+  - id: create_app
+    op: create
+    collection: apps
+    fields: [name, description]
+    required: [name]
+    idempotent_on: [name]
+    latency_ms: 280
+    doc: "Register an application so access to it can be granted."
+    examples:
+      - "api.call {inst} create_app name=expenses description=\"Expense claims\""
+
+  - id: list_entitlements
+    op: list
+    collection: entitlements
+    filter: group
+    latency_ms: 160
+    doc: "Which groups may use which applications."
+    examples:
+      - "api.call {inst} list_entitlements"
+      - "api.call {inst} list_entitlements group=dept-finance"
+
+  - id: grant_app
+    op: create
+    collection: entitlements
+    fields: [group, app, access]
+    required: [group, app]
+    idempotent_on: [group, app]
+    references: { group: groups, app: apps }
+    latency_ms: 320
+    doc: "Let a group use an application. GROUPS get applications; people get groups."
+    examples:
+      - "api.call {inst} grant_app group=dept-finance app=ledger access=write"
+
+  - id: revoke_app
+    op: delete
+    collection: entitlements
+    fields: [group, app]
+    required: [group, app]
+    latency_ms: 300
+    doc: "Take an application away from a group."
+    examples:
+      - "api.call {inst} revoke_app group=dept-finance app=ledger"
+
 forms:
   - id: account_new
     title: "New account"
     calls: create_account
-    fields: [login, user_ref, display_name, dept]
+    fields: [login, user_ref, display_name, dept, status]
   - id: account_edit
     title: "Edit account"
     calls: update_account
@@ -147,8 +246,24 @@ forms:
   - id: group_new
     title: "New group"
     calls: create_group
-    fields: [name, dept]
+    fields: [name, kind, dept, description]
   - id: member_add
     title: "Add to group"
     calls: add_member
     fields: [login, group]
+  - id: member_remove
+    title: "Remove from group"
+    calls: remove_member
+    fields: [login, group]
+  - id: app_new
+    title: "Register application"
+    calls: create_app
+    fields: [name, description]
+  - id: app_grant
+    title: "Give a group an app"
+    calls: grant_app
+    fields: [group, app, access]
+  - id: app_revoke
+    title: "Take an app away"
+    calls: revoke_app
+    fields: [group, app]

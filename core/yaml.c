@@ -155,6 +155,33 @@ static size_t flow_span(const char *s, size_t len)
     return len;   /* unterminated; caller reports it */
 }
 
+/* NESTING, ONE LEVEL DEEPER THAN IT USED TO GO.
+ *
+ * `{ name: status, type: enum, values: [active, suspended] }` is one flow
+ * mapping whose last value is a flow sequence -- and the entry splitter used
+ * to break on the first comma it saw, including the ones INSIDE the brackets,
+ * so it produced "values: [active" and then an entry called "suspended]" with
+ * no colon in it. The error said "flow mapping entry without ':'", which is
+ * true and unhelpful.
+ *
+ * Splitting now skips over any bracketed span, and a value that opens one is
+ * parsed as what it is rather than kept as text. */
+static size_t flow_entry_end(const char *s, size_t start, size_t end)
+{
+    int depth = 0;
+    bool q = false;
+    size_t i = start;
+    while (i < end) {
+        char c = s[i];
+        if (c == '"') q = !q;
+        else if (!q && (c == '[' || c == '{')) depth++;
+        else if (!q && (c == ']' || c == '}')) depth--;
+        else if (!q && c == ',' && depth == 0) break;
+        i++;
+    }
+    return i;
+}
+
 static YNode *parse_flow(Doc *d, const char *s, size_t len, int line)
 {
     char open = s[0];
@@ -167,21 +194,36 @@ static YNode *parse_flow(Doc *d, const char *s, size_t len, int line)
         while (i < end && (s[i] == ' ' || s[i] == ',')) i++;
         if (i >= end) break;
         size_t start = i;
-        bool q = false;
-        while (i < end && (q || s[i] != ',')) { if (s[i] == '"') q = !q; i++; }
+        i = flow_entry_end(s, start, end);
         size_t ilen = rtrim(s + start, i - start);
         if (!ilen) continue;
 
         if (open == '[') {
-            seq_put(n, scalar_node(s + start, ilen, line));
+            const char *ip = s + start;
+            if (ip[0] == '[' || ip[0] == '{') seq_put(n, parse_flow(d, ip, ilen, line));
+            else                              seq_put(n, scalar_node(ip, ilen, line));
         } else {
-            const char *colon = memchr(s + start, ':', ilen);
-            if (!colon) { fail(d, line, "flow mapping entry without ':'"); yaml_free(n); return NULL; }
-            size_t klen = rtrim(s + start, (size_t)(colon - (s + start)));
-            const char *vp = colon + 1;
-            size_t vlen = ilen - (size_t)(vp - (s + start));
+            /* The colon that separates key from value is the first one at
+             * depth zero -- not the first one in the entry, which may be
+             * inside a nested mapping. */
+            const char *ep = s + start;
+            size_t ci = 0;
+            int depth = 0;
+            bool q = false, found = false;
+            for (; ci < ilen; ci++) {
+                char c = ep[ci];
+                if (c == '"') q = !q;
+                else if (!q && (c == '[' || c == '{')) depth++;
+                else if (!q && (c == ']' || c == '}')) depth--;
+                else if (!q && c == ':' && depth == 0) { found = true; break; }
+            }
+            if (!found) { fail(d, line, "flow mapping entry without ':'"); yaml_free(n); return NULL; }
+            size_t klen = rtrim(ep, ci);
+            const char *vp = ep + ci + 1;
+            size_t vlen = ilen - ci - 1;
             while (vlen && *vp == ' ') { vp++; vlen--; }
-            map_put(n, s + start, klen, scalar_node(vp, vlen, line));
+            if (vlen && (vp[0] == '[' || vp[0] == '{')) map_put(n, ep, klen, parse_flow(d, vp, vlen, line));
+            else                                        map_put(n, ep, klen, scalar_node(vp, vlen, line));
         }
     }
     return n;

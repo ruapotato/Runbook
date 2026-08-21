@@ -304,7 +304,7 @@ static bool onboard_careful(Agent *a, const Placement *pl, const char *ticket_id
     }
     if (!dir) dir = where(pl, 0);             /* a new account goes on the emptiest */
 
-    if (!ex_retry(a, 4, "api.call %s create_account login=%s user_ref=%s display_name=%s_%s dept=%s status=active",
+    if (!ex_retry(a, 4, "api.call %s create_account login=%s user_ref=%s display_name=\"%s %s\" dept=%s status=active",
                   dir, login, subject, given, family, dept)) {
         /* THE WRITE THAT COMMITTED AND THEN TIMED OUT (§10). Retrying is not
          * enough on its own, because the retry may be the duplicate. The
@@ -370,7 +370,7 @@ static bool onboard_naive(Agent *a, const Placement *pl, const char *ticket_id, 
     char login[RB_VAL_MAX];
     convention(given, family, login, sizeof login);
 
-    ex(a, "api.call %s create_account login=%s user_ref=%s display_name=%s_%s dept=%s status=active",
+    ex(a, "api.call %s create_account login=%s user_ref=%s display_name=\"%s %s\" dept=%s status=active",
        where(pl, 0), login, subject, given, family, dept);
     ex(a, "api.call %s add_member login=%s group=dept-%s", where(pl, 0), login, dept);
     ex(a, "api.call %s create_mailbox login=%s address=%s@harbrook.example quota_mb=2048 status=active", where(pl, 1), login, login);

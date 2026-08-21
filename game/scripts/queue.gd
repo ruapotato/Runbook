@@ -202,6 +202,14 @@ func _gui_input(e: InputEvent) -> void:
 				checks.clear()
 				_check()
 
+# What the desktop should put in the X11 selection when this window is
+# clicked: the ticket you are looking at. Retyping "TCK-00042" into a terminal
+# is the sort of small friction that adds up over a shift.
+func selected_text() -> String:
+	if selected < 0 or selected >= tickets.size():
+		return ""
+	return str((tickets[selected] as Dictionary).get("id", ""))
+
 func _check() -> void:
 	if selected < 0 or selected >= tickets.size():
 		return

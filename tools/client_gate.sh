@@ -45,10 +45,17 @@ for src in "$ROOT"/core/*.c "$ROOT"/core/*.h "$ROOT"/gdext/*.c; do
     fi
 done
 
+# Which suite to run: the client by default, `games` for the ten lifted ones.
+SUITE="${1:-client}"
+case "$SUITE" in
+    games) SCRIPT=tests/games_test.gd ;;
+    *)     SCRIPT=tests/client_test.gd ;;
+esac
+
 out=$( ulimit -v 8000000; timeout 180 "$GODOT" --headless --path "$ROOT/game" \
-       -s tests/client_test.gd 2>&1 )
+       -s "$SCRIPT" 2>&1 )
 rc=$?
-printf '%s\n' "$out" | grep -E "PASS|FAIL|checks," | sed 's/^/client: /'
+printf '%s\n' "$out" | grep -E "PASS|FAIL|checks,|games," | sed "s/^/$SUITE: /"
 
 if [ $rc -eq 124 ]; then
     echo "client: FAIL  timed out (a GDScript parse error hangs a -s run rather than failing it)"

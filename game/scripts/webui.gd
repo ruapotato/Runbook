@@ -17,6 +17,7 @@ extends Control
 
 const Themes := preload("res://scripts/theme.gd")
 const UiFont := preload("res://scripts/uifont.gd")
+const Clip   := preload("res://scripts/clip.gd")
 
 var api: RunbookApi
 var inst := ""
@@ -30,7 +31,8 @@ var endpoints: Array = []      # from appl.endpoints
 var tab := 0                   # which form, or -1..-n for browse views
 var browse: Array = []         # list endpoints, for the Records tabs
 
-var edits: Array = []          # LineEdits for the current form
+var edits: Array = []          # one control per field: a box, or a list
+var field_types: Dictionary = {}   # collection -> {field -> {type, of, values}}
 var result_line := ""
 var result_good := false
 var rows: Array = []           # what a browse view last fetched
@@ -58,9 +60,76 @@ func setup(a: RunbookApi, instance: String) -> void:
 			browse.append(e)
 	_build()
 
+# WHAT A FIELD IS, ASKED ONCE PER COLLECTION AND REMEMBERED.
+func _types_for(coll: String) -> Dictionary:
+	if field_types.has(coll):
+		return field_types[coll]
+	var d := {}
+	for raw in api.objects(api.exec("appl.fields %s %s" % [inst, coll])):
+		var f: Dictionary = raw
+		d[str(f.get("name", ""))] = f
+	field_types[coll] = d
+	return d
+
+func _endpoint_of(form: Dictionary) -> Dictionary:
+	for raw in endpoints:
+		var e: Dictionary = raw
+		if str(e.get("id", "")) == str(form.get("calls", "")):
+			return e
+	return {}
+
+# WHAT GOES IN A LIST, asked of the world rather than guessed.
+#
+# `of: users` and `of: departments` are the org's, not this appliance's, so
+# they come from the game; anything else is one of this appliance's own
+# collections and comes from its list endpoint. Either way the client is
+# reading it out of the API, which means a picker can never offer something
+# that is not there -- the same rule the terminal's tab completion follows.
+func _options_for(f: Dictionary, coll: String, is_key: bool) -> Array:
+	var out := []
+	var of := str(f.get("of", ""))
+	var ftype := str(f.get("type", "text"))
+
+	if ftype == "enum":
+		return api.list_of(f, "values")
+	if is_key or ftype == "ref":
+		var want := of
+		if is_key:
+			want = coll
+		if want == "departments":
+			for raw in api.body_lines(api.exec("depts")):
+				out.append(str(raw))
+			return out
+		if want == "users":
+			for raw in api.objects(api.exec("user.list")):
+				var u: Dictionary = raw
+				out.append("%s  %s %s" % [u.get("id", ""), u.get("given", ""), u.get("family", "")])
+			return out
+		# One of this appliance's collections: find the list endpoint that
+		# serves it and read the key field off every record.
+		for raw in endpoints:
+			var e: Dictionary = raw
+			if str(e.get("op", "")) != "list" or str(e.get("collection", "")) != want:
+				continue
+			var keyname := _key_of(want)
+			for rec in api.records(api.exec("api.call %s %s" % [inst, str(e.get("id", ""))])):
+				var r: Dictionary = rec
+				if r.has(keyname):
+					out.append(str(r[keyname]))
+			break
+	return out
+
+func _key_of(coll: String) -> String:
+	# The first field of a collection whose type is "key" IS its key.
+	for k in _types_for(coll).keys():
+		var f: Dictionary = _types_for(coll)[k]
+		if str(f.get("type", "")) == "key":
+			return str(k)
+	return "name"
+
 func _clear_edits() -> void:
 	for raw in edits:
-		var e: LineEdit = raw
+		var e: Control = raw
 		if is_instance_valid(e):
 			e.queue_free()
 	edits.clear()
@@ -70,11 +139,38 @@ func _build() -> void:
 	result_line = ""
 	rows.clear()
 	if tab >= 0 and tab < forms.size():
-		var fields := api.list_of(forms[tab], "fields")
+		var form: Dictionary = forms[tab]
+		var ep := _endpoint_of(form)
+		var coll := str(ep.get("collection", ""))
+		var op := str(ep.get("op", ""))
+		var types := _types_for(coll)
+		var fields := api.list_of(form, "fields")
 		for i in range(fields.size()):
+			var fname := str(fields[i])
+			var f: Dictionary = types.get(fname, {})
+			var ftype := str(f.get("type", "text"))
+			# THE FIX A PLAYTEST ASKED FOR. A key field on an endpoint that
+			# edits or deletes something existing is a CHOICE among the things
+			# that exist -- "Edit account" cannot ask you to remember a login.
+			# On a create it is still a box, because the whole point of a
+			# create is that the thing is not there yet.
+			var is_key := ftype == "key" and op != "create"
+			if ftype == "enum" or ftype == "ref" or is_key:
+				var opts := _options_for(f, coll, is_key)
+				if not opts.is_empty():
+					var ob := OptionButton.new()
+					ob.set_meta("field", fname)
+					ob.set_meta("picker", true)
+					ob.add_item("— %s —" % fname)
+					for o in opts:
+						ob.add_item(str(o))
+					_style_picker(ob)
+					add_child(ob)
+					edits.append(ob)
+					continue
 			var le := LineEdit.new()
-			le.placeholder_text = str(fields[i])
-			le.set_meta("field", str(fields[i]))
+			le.placeholder_text = fname
+			le.set_meta("field", fname)
 			# THE VENDOR'S LOOK GOES ALL THE WAY DOWN, including into the
 			# engine's own controls. A Godot LineEdit is unmistakably a Godot
 			# LineEdit, and one of those on every appliance is exactly how the
@@ -92,19 +188,60 @@ func _build() -> void:
 			sf.border_color = th["accent"]
 			sf.set_border_width_all(2)
 			le.add_theme_stylebox_override("focus", sf)
+			# X11 SELECTION, IN A FORM FIELD TOO.
+			#
+			# Godot's LineEdit already does Ctrl-C and Ctrl-V against the
+			# system clipboard. What it has never done is PRIMARY: select some
+			# text and it is immediately pastable with the middle button,
+			# without a keystroke, into any other field or the terminal. On a
+			# desktop that claims to be a desktop, that is not a nicety --
+			# copying a login out of one appliance and into another is most of
+			# what this job is.
+			le.text_change_rejected.connect(func(_r): pass)
+			le.gui_input.connect(func(ev): _field_input(le, ev))
 			add_child(le)
 			edits.append(le)
 	_layout()
 	queue_redraw()
+
+# Selection out, middle-click in. The LineEdit keeps everything else it does.
+func _field_input(le: LineEdit, e: InputEvent) -> void:
+	if e is InputEventMouseButton:
+		var mb := e as InputEventMouseButton
+		if mb.button_index == MOUSE_BUTTON_MIDDLE and mb.pressed:
+			var s := Clip.get_primary()
+			if s != "":
+				# One line only: a form field is one line, and pasting a
+				# transcript into it would be neither useful nor honest.
+				le.insert_text_at_caret(s.get_slice("\n", 0))
+			le.accept_event()
+			return
+		if mb.button_index == MOUSE_BUTTON_LEFT and not mb.pressed:
+			# The selection is whatever it is once the button comes up.
+			var sel := le.get_selected_text()
+			if sel != "":
+				Clip.set_primary(sel)
+
+func _style_picker(ob: OptionButton) -> void:
+	ob.add_theme_color_override("font_color", th["ink"])
+	ob.add_theme_color_override("font_hover_color", th["ink"])
+	ob.add_theme_color_override("font_focus_color", th["ink"])
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = th["field"]
+	sb.border_color = th["edge"]
+	sb.set_border_width_all(1)
+	sb.content_margin_left = 6.0
+	for st in ["normal", "hover", "pressed", "focus", "disabled"]:
+		ob.add_theme_stylebox_override(st, sb)
 
 func _layout() -> void:
 	var pad: float = th.get("pad", 8.0)
 	var row: float = th.get("row", 24.0)
 	var top := 58.0
 	for i in range(edits.size()):
-		var le: LineEdit = edits[i]
-		le.position = Vector2(pad + 130.0, top + i * (row + 6.0))
-		le.size = Vector2(maxf(160.0, size.x - pad * 2.0 - 140.0), row)
+		var c: Control = edits[i]
+		c.position = Vector2(pad + 130.0, top + i * (row + 6.0))
+		c.size = Vector2(maxf(160.0, size.x - pad * 2.0 - 140.0), row)
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_RESIZED:
@@ -165,9 +302,9 @@ func _draw_form() -> void:
 	var row: float = th.get("row", 24.0)
 	var top := 58.0
 	for i in range(edits.size()):
-		var le: LineEdit = edits[i]
+		var c: Control = edits[i]
 		draw_string(mono, Vector2(pad, top + i * (row + 6.0) + row * 0.7),
-			str(le.get_meta("field")), HORIZONTAL_ALIGNMENT_LEFT, 124, 12, th["ink"])
+			str(c.get_meta("field")), HORIZONTAL_ALIGNMENT_LEFT, 124, 12, th["ink"])
 	var b := _submit_rect()
 	draw_rect(b, th["accent"])
 	draw_string(mono, Vector2(b.position.x + 12, b.position.y + 15), "Submit",
@@ -222,18 +359,29 @@ func _submit() -> void:
 	var f: Dictionary = forms[tab]
 	var line := "form.submit %s %s" % [inst, str(f.get("id", ""))]
 	for raw in edits:
-		var le: LineEdit = raw
-		var v := str(le.text).strip_edges()
+		var c: Control = raw
+		var v := ""
+		if bool(c.get_meta("picker", false)):
+			var ob: OptionButton = c
+			# Item 0 is the "— field —" placeholder, which means "left blank".
+			if ob.selected > 0:
+				v = ob.get_item_text(ob.selected)
+				# A user picker shows "u_00041  Alma Barrow"; the API wants the
+				# id. Everything the player needs to read, nothing the API has
+				# to parse.
+				v = v.get_slice("  ", 0)
+		else:
+			var le: LineEdit = c
+			v = str(le.text)
+		v = v.strip_edges()
 		if v != "":
-			# Spaces would split the argument. The protocol takes identifiers
-			# because tickets are structured objects, not prose (decision 5),
-			# so a space here is a typo and saying so beats mangling it.
+			# QUOTED IF IT NEEDS TO BE. This used to refuse any value with a
+			# space in it and say so as though the player had made a mistake,
+			# which is how a display name of "Alma Barrow" -- that is to say,
+			# a name -- became a validation error.
 			if v.find(" ") >= 0:
-				result_line = "%s cannot contain a space" % str(le.get_meta("field"))
-				result_good = false
-				queue_redraw()
-				return
-			line += " %s=%s" % [str(le.get_meta("field")), v]
+				v = "\"%s\"" % v
+			line += " %s=%s" % [str(c.get_meta("field")), v]
 	var resp := api.exec(line)
 	result_good = api.ok(resp)
 	if result_good:

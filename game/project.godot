@@ -14,6 +14,19 @@ run/main_scene="res://scenes/desk.tscn"
 config/features=PackedStringArray("4.4", "GL Compatibility")
 boot_splash/show_image=false
 
+[debug]
+
+; WARN, DO NOT ERROR, ON INFERENCE FROM A VARIANT.
+;
+; Godot 4.7 defaults this to an error, and the ten games lifted from NOMINAL
+; are written against a project where it was a warning -- so every one of them
+; failed to PARSE, and the desktop's launcher then called .new() on a null
+; script and threw a second, unrelated-looking error on top. Two lines of
+; project settings, an evening's worth of confusion.
+;
+; NOMINAL sets it to 1 for the same reason. Matching it is the whole fix.
+gdscript/warnings/inference_on_variant=1
+
 [display]
 
 window/size/viewport_width=1280

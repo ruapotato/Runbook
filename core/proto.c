@@ -15,11 +15,26 @@
 #include <stdarg.h>
 
 /* ------------------------------------------------------------ tokenising */
-/* Whitespace-separated words, no quoting. Deliberately primitive: tickets are
- * structured objects and arguments are identifiers (handoff decision 5), so
- * the day this needs a quoting rule is the day something has gone wrong with
- * the data model. */
-#define MAX_ARGV 8
+/* Whitespace-separated words, WITH QUOTING.
+ *
+ * It had no quoting, on the reasoning that tickets are structured objects and
+ * arguments are identifiers (decision 5) -- so the day it needed a quoting
+ * rule would be the day something had gone wrong with the data model.
+ *
+ * The day was the first playtest. A display name is `Alma Barrow`, because
+ * display names have spaces in them, and refusing one is not a data model
+ * being principled, it is a game telling a player that people are not allowed
+ * two names. Identifiers are still identifiers; a VALUE is text.
+ *
+ * The rule is the one every shell uses and every player already knows:
+ *
+ *     user.add Alma Barrow sales
+ *     api.call directory_01 create_account login=abarrow display_name="Alma Barrow"
+ *
+ * A quote may open anywhere in a word and runs to the next quote. There are no
+ * escapes, because a value containing a quote is not a thing this world has,
+ * and inventing an escape rule for it would be inventing the problem. */
+#define MAX_ARGV 10
 
 static int split(char *line, char *argv[MAX_ARGV])
 {
@@ -29,8 +44,17 @@ static int split(char *line, char *argv[MAX_ARGV])
         while (*p == ' ' || *p == '\t') p++;
         if (!*p) break;
         argv[argc++] = p;
-        while (*p && *p != ' ' && *p != '\t') p++;
-        if (*p) *p++ = 0;
+        /* Copy in place, dropping the quote characters: the argument ends up
+         * shorter than the span it came from, so it always fits. */
+        char *w = p;
+        bool q = false;
+        while (*p && (q || (*p != ' ' && *p != '\t'))) {
+            if (*p == '"') { q = !q; p++; continue; }
+            *w++ = *p++;
+        }
+        bool more = (*p != 0);
+        *w = 0;
+        if (more) p++;
     }
     return argc;
 }
@@ -155,6 +179,7 @@ static void cmd_help(Buf *out)
         "appl.install <model>          stand up another one; costs 40 in-game minutes\n"
         "appl.forms <instance|model>   the web UI, as data\n"
         "appl.endpoints <instance|model>  every endpoint, machine-readable\n"
+        "appl.fields <instance|model> <collection>  what each field is: text, enum, ref\n"
         "api.call <instance> <endpoint> [field=value ...]\n"
         "form.submit <instance> <form> [field=value ...]\n"
         "quit\n"
@@ -434,6 +459,32 @@ bool proto_exec(Session *s, const char *line, Buf *out)
         return true;
     }
 
+    /* WHAT A FIELD IS, so a form can offer a list instead of a blank box.
+     *
+     * Separate from appl.forms rather than nested inside it, because the
+     * response format is one flat object per line and a form's field list
+     * would have to become an array of objects to carry this -- which every
+     * reader, including the player's, would then have to learn to unpick. One
+     * more verb is cheaper than one more shape. */
+    if (!strcmp(cmd, "appl.fields")) {
+        if (argc < 3) { err(out, "appl.fields <instance|model> <collection>"); return true; }
+        Inst *in = world_inst(w, argv[1]);
+        const Model *m = in ? in->m : spec_model(w->specs, argv[1]);
+        if (!m) { err(out, "no such appliance or model: %s", argv[1]); return true; }
+        const CollSpec *cs = model_coll(m, argv[2]);
+        if (!cs) { err(out, "%s has no collection called %s", m->id, argv[2]); return true; }
+        buf_puts(out, "+OK fields\n");
+        for (int i = 0; i < cs->nfield; i++) {
+            const FieldSpec *f = &cs->fs[i];
+            buf_printf(out, "{\"name\":\"%s\",\"type\":\"%s\",\"of\":\"%s\",\"values\":[",
+                       f->name, field_type_name(f->type), f->of);
+            for (int v = 0; v < f->nvalue; v++) buf_printf(out, "%s\"%s\"", v ? "," : "", f->value[v]);
+            buf_puts(out, "]}\n");
+        }
+        buf_puts(out, ".\n");
+        return true;
+    }
+
     /* The web UI, as data. No client renders it until M3; it is served now so
      * that when one does, it renders THIS rather than growing its own idea of
      * what the appliance can do (handoff decision 6). */
@@ -581,6 +632,28 @@ bool proto_exec(Session *s, const char *line, Buf *out)
         if (argc < 2) { err(out, "user.offboard <id>"); return true; }
         if (!world_user_offboard(w, argv[1])) { err(out, "%s", w->err); return true; }
         ok(out, "offboarded %s", argv[1]);
+        return true;
+    }
+
+    /* IT IS NOT A SHELL, AND SAYING SO IS BETTER THAN "unknown verb".
+     *
+     * A terminal on a desktop is a shell, and the first thing anybody types
+     * into one is `ls`. Answering "unknown verb: ls" tells them the terminal
+     * is broken. Answering what this console actually is tells them what to
+     * type next -- and admits, plainly, that the machine with a real shell on
+     * it is a milestone away rather than pretending the question was silly. */
+    static const char *const SHELLISH[] = {
+        "ls", "cd", "pwd", "cat", "echo", "grep", "ps", "top", "man", "df",
+        "mkdir", "rm", "cp", "mv", "vi", "vim", "nano", "less", "more",
+        "whoami", "uname", "clear", "exit", "sudo", "su", "chmod", "find"
+    };
+    for (size_t i = 0; i < sizeof SHELLISH / sizeof SHELLISH[0]; i++) {
+        if (strcmp(cmd, SHELLISH[i])) continue;
+        buf_printf(out,
+            "-ERR this is the RUNBOOK API console, not a shell -- there is no '%s' here.\n"
+            "The verbs are the game's API; type 'help' for all of them. Tab completes.\n"
+            "A real machine with a real shell on it is what the scripting milestone is for;\n"
+            "until then, everything the desktop's forms do, you can do here.\n.\n", cmd);
         return true;
     }
 

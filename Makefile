@@ -122,6 +122,7 @@ shot: gdext
 # gates are the ones that must be green everywhere.
 client: gdext
 	@./tools/client_gate.sh
+	@./tools/client_gate.sh games
 
 # ------------------------------------------------------------------- gdext
 # The Godot binding. It links the SAME core the socket and every gate use, so

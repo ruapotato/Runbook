@@ -234,7 +234,7 @@ int health_run(uint64_t seed, const char *specdir)
     Field f[4];
     snprintf(f[0].k, sizeof f[0].k, "login");        snprintf(f[0].v, sizeof f[0].v, "hcheck1");
     snprintf(f[1].k, sizeof f[1].k, "user_ref");     snprintf(f[1].v, sizeof f[1].v, "%s", w->users[0].id);
-    snprintf(f[2].k, sizeof f[2].k, "display_name"); snprintf(f[2].v, sizeof f[2].v, "Health_Check");
+    snprintf(f[2].k, sizeof f[2].k, "display_name"); snprintf(f[2].v, sizeof f[2].v, "Health Check");
     snprintf(f[3].k, sizeof f[3].k, "dept");         snprintf(f[3].v, sizeof f[3].v, "engineering");
     ApiResult r1, r2;
     appl_call(w, dir, "create_account", f, 4, PROV_SCRIPT, &r1);
@@ -262,7 +262,7 @@ int health_run(uint64_t seed, const char *specdir)
 
     call(w, dir, "delete_account", "login", "hcheck1", NULL, NULL, NULL, NULL, &body);
     int st_spent = call(w, dir, "create_account", "login", "hcheck1", "user_ref", w->users[0].id,
-                        "display_name", "Health_Check", &body);
+                        "display_name", "Health Check", &body);
     /* dept is missing again here, so a 400 would be ambiguous — send it properly. */
     ApiResult r3;
     appl_call(w, dir, "create_account", f, 4, PROV_SCRIPT, &r3);

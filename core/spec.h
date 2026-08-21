@@ -60,12 +60,41 @@ typedef struct {
 } Vendor;
 
 /* ----------------------------------------------------------- collections */
+/* A FIELD HAS A TYPE, and the reason is a playtest.
+ *
+ * "Edit account has no way to select what user to edit." Quite right: the
+ * form offered a box called `login` and expected the operator to have
+ * memorised one. A web UI that makes you type a primary key is not a web UI,
+ * it is a curl command with a border.
+ *
+ * So a field can say what it is, and the generated form renders accordingly:
+ *   text    a box
+ *   enum    a list of the values it names
+ *   ref     a list of what is actually in the collection it points at
+ *   key     the record being edited -- a list of the records that exist
+ *
+ * It stays declarative, so a new appliance gets pickers for free, and the API
+ * is unchanged: a picker sends the same field=value a box would. The UI got
+ * better without the protocol learning anything. */
+typedef enum { FT_TEXT = 0, FT_ENUM, FT_REF, FT_KEY, FT__N } FieldType;
+
+#define SPEC_MAX_ENUM 8
+
+typedef struct {
+    char      name[RB_NAME_MAX];
+    FieldType type;
+    char      of[RB_NAME_MAX];                      /* ref: which collection */
+    char      value[SPEC_MAX_ENUM][RB_NAME_MAX];    /* enum: what it may be */
+    int       nvalue;
+} FieldSpec;
+
 typedef struct {
     char   name[RB_NAME_MAX];                       /* accounts */
     char   key[SPEC_MAX_KEYS][RB_NAME_MAX];         /* the unique, indexed key */
     int    nkey;
     char   field[SPEC_MAX_FIELDS][RB_NAME_MAX];
     int    nfield;
+    FieldSpec fs[SPEC_MAX_FIELDS];                  /* parallel to field[] */
     /* May a deleted record's key be used again?
      *
      * For memberships, yes: removing someone from a group and adding them
@@ -212,6 +241,8 @@ const Vendor   *spec_vendor(const Specs *s, const char *id);
 const Model    *spec_model(const Specs *s, const char *id);
 const Endpoint *model_endpoint(const Model *m, const char *id);
 const CollSpec *model_coll(const Model *m, const char *name);
+const FieldSpec *coll_field(const CollSpec *cs, const char *name);
+const char *field_type_name(FieldType t);
 const char     *op_name(EndpointOp op);
 const char     *arch_name(VendorArch a);
 

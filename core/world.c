@@ -283,11 +283,55 @@ static void seed_org(World *w)
     Coll *sc = inst_coll(fs, "shares");
     Coll *tc = inst_coll(fs, "grants");
 
+    /* THE APPLICATION CATALOGUE. Invented names, like every vendor and product
+     * in this game (decision 8), and the reason they are here at all is that
+     * "give this person access to the expenses system" is the second half of
+     * the access domain (§6) and it is not a thing you can model without
+     * something to grant. */
+    static const char *const APPS[][2] = {
+        { "ledger",    "Finance ledger and expense claims" },
+        { "atlas",     "Customer records" },
+        { "forge",     "Source control and builds" },
+        { "signal",    "Support desk and phone queue" },
+        { "cartogram", "Reporting and dashboards" },
+        { "vault",     "Contracts and signed documents" },
+    };
+    Coll *apc = inst_coll(dir, "apps");
+    for (size_t i = 0; i < sizeof APPS / sizeof APPS[0]; i++) {
+        Rec *a = appl_seed(dir, "apps", PROV_SEED, w->day);
+        rec_set(a, "name", APPS[i][0]);
+        rec_set(a, "description", APPS[i][1]);
+        coll_index_rec(apc, a);
+    }
+
+    /* Which department may use what. Everyone gets the support desk and the
+     * reporting tool; the rest is by department. This is the shape the whole
+     * access model rests on: PEOPLE are not given applications, groups are. */
+    static const int DEPT_APPS[RB_DEPT__N][3] = {
+        { 2, 4, -1 },   /* engineering: forge, cartogram   */
+        { 1, 4, -1 },   /* sales:       atlas, cartogram   */
+        { 3, 1, -1 },   /* support:     signal, atlas      */
+        { 0, 5, -1 },   /* finance:     ledger, vault      */
+        { 2, 3, -1 },   /* operations:  forge, signal      */
+        { 1, 4, -1 },   /* marketing:   atlas, cartogram   */
+    };
+    Coll *enc = inst_coll(dir, "entitlements");
+
     for (int d = 0; d < RB_DEPT__N; d++) {
         Rec *g = appl_seed(dir, "groups", PROV_SEED, w->day);
         rec_setf(g, "name", "dept-%s", rb_dept_name[d]);
+        rec_set(g, "kind", "department");
         rec_set(g, "dept", rb_dept_name[d]);
+        rec_setf(g, "description", "Everyone in %s", rb_dept_name[d]);
         coll_index_rec(gc, g);
+
+        for (int k = 0; k < 3 && DEPT_APPS[d][k] >= 0; k++) {
+            Rec *e = appl_seed(dir, "entitlements", PROV_SEED, w->day);
+            rec_setf(e, "group", "dept-%s", rb_dept_name[d]);
+            rec_set(e, "app", APPS[DEPT_APPS[d][k]][0]);
+            rec_set(e, "access", "write");
+            coll_index_rec(enc, e);
+        }
 
         Rec *sh = appl_seed(fs, "shares", PROV_SEED, w->day);
         rec_setf(sh, "name", "share-%s", rb_dept_name[d]);
@@ -316,10 +360,14 @@ static void seed_org(World *w)
         Rec *a = appl_seed(dir, "accounts", PROV_SEED, w->day);
         rec_set(a, "login", cand);
         rec_set(a, "user_ref", u->id);
-        rec_setf(a, "display_name", "%s_%s", u->given, u->family);
+        /* A NAME, WITH THE SPACE IN IT. It was "%s_%s" because the protocol could
+         * not carry a space, which is a tail wagging a dog: the org's records
+         * should look like records, and the protocol learned to quote. */
+        rec_setf(a, "display_name", "%s %s", u->given, u->family);
         rec_set(a, "dept", rb_dept_name[u->dept]);
         rec_set(a, "status", "active");
         coll_index_rec(ac, a);
+        (void)apc; (void)enc;
 
         Rec *m = appl_seed(dir, "memberships", PROV_SEED, w->day);
         rec_set(m, "login", cand);

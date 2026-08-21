@@ -50,8 +50,7 @@ func _tick() -> void:
 			var t: Node = desk._find_window("Terminal")
 			if t != null:
 				var tc: Node = t.get_meta("content")
-				tc.input = "ticket.check TCK-00001"
-				tc._run()
+				tc.feed("ticket.check TCK-00001\n")
 			desk._launch("Queue")
 			_place(desk, "Queue", Vector2(24, 300), Vector2(620, 460))
 			var q: Node = desk._find_window("Queue")

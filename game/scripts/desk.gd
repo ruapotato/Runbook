@@ -35,9 +35,12 @@ const UiFont := preload("res://scripts/uifont.gd")
 # warns against. Shapes, not letters: a set that spells out its meaning in
 # glyphs is a set that gave up.
 const Icons  := preload("res://scripts/icons.gd")
+const Clip   := preload("res://scripts/clip.gd")
 const Queue  := preload("res://scripts/queue.gd")
 const WebUI  := preload("res://scripts/webui.gd")
-const Term   := preload("res://scripts/term.gd")
+# NOMINAL's terminal, not the one I wrote and then had to throw away. See the
+# note at the top of that file.
+const Term   := preload("res://scripts/terminal.gd")
 
 # --- palette: light panels, blue wall (MATE's default, near enough) ---
 # NOMINAL's palette, verbatim, because it was already right: light panels, a
@@ -699,6 +702,21 @@ func _input(e: InputEvent) -> void:
 		drag = null
 		sizing = null
 
+	# The queue's ticket list is text somebody will want to copy -- a login, a
+	# user id, a share name. Selecting inside a drawn Control is more than
+	# this desktop needs, but a click on a ticket putting its id in PRIMARY
+	# costs one line and saves retyping "TCK-00042" into the terminal.
+	if e is InputEventMouseButton and e.pressed and e.button_index == MOUSE_BUTTON_LEFT:
+		for raw in windows:
+			var w: Control = raw
+			if not is_instance_valid(w) or not w.visible:
+				continue
+			var c: Node = w.get_meta("content")
+			if c.has_method("selected_text") and Rect2(w.position, w.size).has_point(e.position):
+				var s := str(c.selected_text())
+				if s != "":
+					Clip.set_primary(s)
+
 func _find_window(key: String) -> Control:
 	for raw in windows:
 		var w: Control = raw
@@ -721,8 +739,7 @@ func _activate(kind: String) -> void:
 			var t := _find_window("Terminal")
 			if t != null:
 				var tc: Node = t.get_meta("content")
-				tc.input = "help"
-				tc._run()
+				tc.feed("help\n")
 		"sys:quit":
 			get_tree().quit()
 		_:
@@ -756,9 +773,20 @@ func _launch(kind: String) -> void:
 		_win("Queue", Rect2(at, Vector2(760, 470)), q, "notes")
 	elif kind == "Terminal":
 		var t := Term.new()
-		t.setup(api)
+		# The terminal knows nothing about this game: it takes a line, hands
+		# it somewhere, and prints what comes back. That is the only contract,
+		# and it is why the same control served an emulated Unix in NOMINAL
+		# and serves an API here.
+		t.on_command = func(line: String) -> String: return api.exec(line)
+		t.prompt_fn  = func() -> String: return "runbook$ "
+		t.banner = PackedStringArray([
+			"RUNBOOK/1 — the same API the forms use.",
+			"Every button on this desktop sends one of these. Type 'help'; Tab completes.",
+			"",
+		])
+		t._load_commands()
 		t.focus_mode = Control.FOCUS_ALL
-		_win("Terminal", Rect2(at, Vector2(700, 400)), t, "term")
+		_win("Terminal", Rect2(at, Vector2(720, 420)), t, "term")
 		# Only if there is a tree to take focus in. Focus is a scene-tree
 		# concept and asking for it outside one is an engine error, not a
 		# no-op -- which the client gate, building a desktop before the first
@@ -786,13 +814,19 @@ func _launch(kind: String) -> void:
 			if str(g["kind"]) == kind:
 				label = str(g["label"])
 				icon = str(g["icon"])
+		# A LOAD THAT FAILED IS NOT A GDScript, and calling .new() on it throws
+		# a second error that says nothing about the first. The parse error is
+		# the diagnosis; this is just noise on top of it, and it took a
+		# playtester's log to separate the two.
 		var res: Resource = load("res://scripts/%s.gd" % script_name)
-		if res is GDScript:
-			var inst: Object = (res as GDScript).new()
-			if inst is Control:
-				var c: Control = inst
-				c.focus_mode = Control.FOCUS_ALL
-				_win(label, Rect2(at, Vector2(520, 400)), c, icon)
-				if c.is_inside_tree():
-					c.grab_focus()
+		if res == null or not (res is GDScript):
+			push_error("runbook: %s.gd did not load; see the parse error above" % script_name)
+			return
+		var inst: Object = (res as GDScript).new()
+		if inst is Control:
+			var c: Control = inst
+			c.focus_mode = Control.FOCUS_ALL
+			_win(label, Rect2(at, Vector2(520, 400)), c, icon)
+			if c.is_inside_tree():
+				c.grab_focus()
 	if foot: foot.queue_redraw()
