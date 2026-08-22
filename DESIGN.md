@@ -103,9 +103,21 @@ machine. Nothing else about the guest is throttled.
 other also puts fires out and moves people out of vacuum.
 
 ```
-fight:   only shooting      45% won, 86s average
-fight:   actually playing   97% won, 106s average
+fight:   only shooting      32% won, 96s average
+fight:   actually playing  100% won, 129s average
 ```
+
+A hundred percent says the ceiling is reachable, not that the game is easy:
+`bot_playing` is a reference, not a person -- it re-evaluates every tick,
+counts doorways exactly, and never gets distracted by the terminal it has
+open. The number that says something about difficulty is the other one.
+
+`--fight` also asserts the RULES, separately from the balance: that crew are
+not where you sent them the instant you ask, that a shut door on the route
+costs longer, that the teleporter refuses for each of its three reasons, and
+that shooting their engine room damages their engine room and nothing else.
+Those are rules a player builds a strategy on, and one that silently stops
+holding is worse than one that was never there.
 
 If shooting alone won, the ship would be decoration. If playing well could not
 win, the fight would be unfair. **Every constant in `core/ship.c` was set by
@@ -165,7 +177,7 @@ session speaks.
 |---|---|
 | `fight` | the decisions are worth something (§5) |
 | `machine` | the computer boots, the shell works, the language passes its own suite, and a script can fly the ship in real time |
-| `client` | the extension loaded, the windows float, **and every click prints its command** |
+| `client` | the extension loaded, the windows float, **and every click prints its command** -- including that clicking the raider's weapon room sends `fire weapons`, and that the map catches shots actually in flight |
 | `games` | the ten mini-games still run |
 | `determinism` | §8 |
 

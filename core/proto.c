@@ -93,16 +93,24 @@ static void cmd_help(Buf *out)
         "+OK what you can do\n"
         "\n"
         "  power <system> <bars>   route power. systems: shields engines weapons\n"
-        "                          oxygen medbay computer\n"
-        "  send <crew> <room>      send somebody somewhere. what they do is\n"
-        "                          decided by what is in the room they are in:\n"
+        "                          oxygen medbay computer teleporter\n"
+        "  send <crew> <room>      send somebody somewhere. THEY WALK -- a room or\n"
+        "                          two takes a few seconds, and a shut door on\n"
+        "                          the way takes longer. what they do when they\n"
+        "                          get there is decided by what is in that room:\n"
         "                          fight the fire, repair the damage, or man it\n"
-        "  fire [hull|shields]     shoot, when the gun is charged\n"
+        "  send <crew> <room> now  the teleporter. needs power in it AND your own\n"
+        "                          shields down -- it is a trade, not a shortcut\n"
+        "  fire [what]             shoot, when the gun is charged. `what` is one\n"
+        "                          of their rooms: shields, weapons, engines, or\n"
+        "                          hull. `enemy.rooms` lists them\n"
         "  door <room> open|shut   a shut door stops fire and holds air\n"
         "  pause / resume          time stops. thinking is free\n"
         "\n"
         "  ship                    the whole ship, as one object\n"
         "  status / enemy          your numbers, and theirs, separately\n"
+        "  enemy.rooms             what they have, and what you have broken\n"
+        "  shots                   what is in the air right now\n"
         "  rooms                   one line per room\n"
         "  crew                    one line per person\n"
         "  log                     what just happened\n"
@@ -147,23 +155,58 @@ bool proto_exec(Session *s, const char *line, Buf *out)
     }
 
     if (!strcmp(cmd, "send")) {
-        if (argc < 3) { err(out, "send <crew> <room>"); return true; }
+        if (argc < 3) { err(out, "send <crew> <room> [now]"); return true; }
         int room = atoi(argv[2]);
         /* A room may be named as well as numbered, because "send Vane
          * weapons" is what a person says and "send Vane 3" is what a script
          * ends up writing. Both, and the recorder keeps whichever you used. */
         for (int i = 0; i < sh->nroom; i++)
             if (!strcmp(sh->room[i].name, argv[2])) room = i;
-        if (!ship_send(sh, argv[1], room, e, sizeof e)) { err(out, "%s", e); return true; }
+        /* `now` is the teleporter. Anything else in that slot is a typo and
+         * gets said so, rather than being ignored into a slow walk the player
+         * did not ask for. */
+        bool now = false;
+        if (argc > 3) {
+            if (strcmp(argv[3], "now")) { err(out, "send <crew> <room> [now]"); return true; }
+            now = true;
+        }
+        if (!ship_send(sh, argv[1], room, now, e, sizeof e)) { err(out, "%s", e); return true; }
         recorder_step(w, line);
-        ok(out, "%s is in the %s", argv[1], sh->room[room].name);
+        if (now) { ok(out, "%s is in the %s. instantly.", argv[1], sh->room[room].name); return true; }
+
+        /* HOW LONG IT WILL TAKE, said out loud. The whole point of walking is
+         * that distance costs you something, and a player cannot trade
+         * against a cost they have to count doorways to discover. */
+        int hops = ship_path_len(sh, ship_crew_room(sh, argv[1]), room);
+        if (hops <= 0) ok(out, "%s is already in the %s", argv[1], sh->room[room].name);
+        else ok(out, "%s is walking to the %s -- %d room%s, about %ds",
+                argv[1], sh->room[room].name, hops, hops == 1 ? "" : "s",
+                (int)(hops * 1.7 + 0.5));
         return true;
     }
 
     if (!strcmp(cmd, "fire")) {
         if (!ship_fire(sh, argc > 1 ? argv[1] : "", e, sizeof e)) { err(out, "%s", e); return true; }
         recorder_step(w, line);
-        ok(out, "fired");
+        ok(out, "fired at their %s", argc > 1 && argv[1][0] ? argv[1] : "hull");
+        return true;
+    }
+
+    /* THE OTHER SHIP, ROOM BY ROOM. This is what the sensors window paints
+     * and what a script reads before deciding where to aim. */
+    if (!strcmp(cmd, "enemy.rooms")) {
+        buf_puts(out, "+OK enemy.rooms\n");
+        ship_render_enemy(sh, out);
+        buf_puts(out, ".\n");
+        return true;
+    }
+
+    /* WHAT IS IN THE AIR. Empty most of the time, which is the point: when it
+     * is not empty you have about a second to do something. */
+    if (!strcmp(cmd, "shots")) {
+        buf_puts(out, "+OK shots\n");
+        ship_render_shots(sh, out);
+        buf_puts(out, ".\n");
         return true;
     }
 
@@ -212,10 +255,10 @@ bool proto_exec(Session *s, const char *line, Buf *out)
         buf_puts(out, "+OK status\n");
         buf_printf(out, "{\"ship\":\"%s\",\"hull\":%d,\"hull_max\":%d,\"shields\":%d,"
                         "\"power_free\":%d,\"power_total\":%d,\"weapon\":%d,\"clock\":%d,"
-                        "\"paused\":%s,\"over\":%s,\"won\":%s}\n",
+                        "\"evade\":%d,\"paused\":%s,\"over\":%s,\"won\":%s}\n",
                    sh->name, (int)sh->hull, (int)sh->hull_max, sh->shields,
                    ship_power_free(sh), ship_power_total(sh), (int)(sh->weapon_charge * 100),
-                   (int)sh->clock, sh->paused ? "true" : "false",
+                   (int)sh->clock, (int)(ship_evade(sh) * 100), sh->paused ? "true" : "false",
                    sh->over ? "true" : "false", sh->won ? "true" : "false");
         buf_puts(out, ".\n");
         return true;
@@ -223,9 +266,11 @@ bool proto_exec(Session *s, const char *line, Buf *out)
 
     if (!strcmp(cmd, "enemy")) {
         buf_puts(out, "+OK enemy\n");
-        buf_printf(out, "{\"name\":\"%s\",\"hull\":%d,\"hull_max\":%d,\"shields\":%d,\"charge\":%d}\n",
+        buf_printf(out, "{\"name\":\"%s\",\"hull\":%d,\"hull_max\":%d,\"shields\":%d,"
+                        "\"shields_max\":%d,\"charge\":%d,\"evade\":%d}\n",
                    sh->enemy.name, (int)sh->enemy.hull, (int)sh->enemy.hull_max,
-                   sh->enemy.shields, (int)(sh->enemy.charge * 100));
+                   sh->enemy.shields, sh->enemy.shields_max,
+                   (int)(sh->enemy.charge * 100), (int)(ship_enemy_evade(sh) * 100));
         buf_puts(out, ".\n");
         return true;
     }
@@ -246,10 +291,21 @@ bool proto_exec(Session *s, const char *line, Buf *out)
 
     if (!strcmp(cmd, "crew")) {
         buf_puts(out, "+OK crew\n");
-        for (int i = 0; i < sh->ncrew; i++)
-            buf_printf(out, "{\"name\":\"%s\",\"room\":%d,\"where\":\"%s\",\"health\":%d,\"alive\":%s}\n",
-                       sh->crew[i].name, sh->crew[i].room, sh->room[sh->crew[i].room].name,
-                       (int)(sh->crew[i].health * 100), sh->crew[i].alive ? "true" : "false");
+        for (int i = 0; i < sh->ncrew; i++) {
+            const Crew *cr = &sh->crew[i];
+            /* WHERE THEY ARE, AND WHERE THEY ARE GOING. `room` is where they
+             * count as being -- the room whose fire they are fighting.
+             * `walking_to` is the room they are crossing into, -1 when they
+             * are standing still, and `across` is how far through the doorway
+             * they are. A script that wants "is Vane there yet" checks
+             * walking_to; the bridge needs `across` to draw them in the gap. */
+            buf_printf(out, "{\"name\":\"%s\",\"room\":%d,\"where\":\"%s\","
+                            "\"walking_to\":%d,\"across\":%d,\"dest\":%d,"
+                            "\"health\":%d,\"alive\":%s}\n",
+                       cr->name, cr->room, sh->room[cr->room].name,
+                       cr->step, (int)(cr->transit * 100), cr->dest,
+                       (int)(cr->health * 100), cr->alive ? "true" : "false");
+        }
         buf_puts(out, ".\n");
         return true;
     }

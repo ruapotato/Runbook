@@ -44,7 +44,7 @@ func _init() -> void:
 	   "the ship's state comes back through the extension")
 
 	var rooms := api.objects(api.exec("rooms"))
-	ck(rooms.size() == 8, "eight rooms, one line each")
+	ck(rooms.size() == 9, "nine rooms, one line each")
 	var crew := api.objects(api.exec("crew"))
 	ck(crew.size() >= 3, "and a crew to put in them")
 
@@ -157,8 +157,82 @@ func _desktop_checks() -> void:
 
 	_menu_checks(desk)
 	_bridge_checks(desk)
+	_sensors_checks(desk)
+	_map_checks(desk)
 	_terminal_checks(desk)
 	_recorder_checks()
+
+# THE SENSORS WINDOW IS WHERE THE GUN'S DECISION LIVES.
+#
+# Clicking their weapon room has to send `fire weapons` -- not `fire`, not a
+# room index the player never saw. The whole point of giving the enemy an
+# interior is that "what do I shoot" becomes a sentence.
+func _sensors_checks(desk: Node) -> void:
+	desk._launch("Sensors")
+	var win: Node = desk._find_window("Sensors")
+	if win == null:
+		ck(false, "the sensors window opened")
+		return
+	var sv: Node = win.get_meta("content")
+	sv.size = Vector2(660, 430)
+	sv.refresh()
+	ck(sv.rooms.size() == 4, "sensors painted the raider's four rooms")
+	if sv.rooms.size() < 4:
+		return
+
+	var wp := -1
+	for i in range(sv.rooms.size()):
+		if str((sv.rooms[i] as Dictionary).get("system", "")) == "weapons":
+			wp = i
+	ck(wp >= 0, "their weapon room is one of them")
+	if wp < 0:
+		return
+
+	var api: RunbookApi = sv.api
+	api.exec("pause")
+	api.exec("power weapons 3")
+	# Charge the gun by playing, not by reaching past the protocol.
+	api.exec("resume")
+	for i in range(60):
+		api.exec("tick 0.5")
+	api.exec("pause")
+
+	var click := InputEventMouseButton.new()
+	click.button_index = MOUSE_BUTTON_LEFT
+	click.pressed = true
+	var rr: Rect2 = sv._room_rect(wp)
+	click.position = rr.get_center()
+	sv._gui_input(click)
+
+	var said := ""
+	for l in sv.console:
+		said += str(l) + "\n"
+	ck(said.find("fire weapons") >= 0,
+	   "clicking their weapon room sends `fire weapons`, which is a line you could type")
+
+# THE MAP SHOWS WHAT IS IN THE AIR.
+#
+# A shot takes about a second to cross, and that second is the only reason
+# this window exists. If `shots` ever comes back empty while a volley is in
+# flight, the window is a diagram of nothing.
+func _map_checks(desk: Node) -> void:
+	desk._launch("Map")
+	var win: Node = desk._find_window("Map")
+	if win == null:
+		ck(false, "the map opened")
+		return
+	var tv: Node = win.get_meta("content")
+	var api: RunbookApi = tv.api
+
+	api.exec("resume")
+	var seen := 0
+	for i in range(400):
+		api.exec("tick 0.1")
+		tv.refresh()
+		if tv.shots.size() > 0:
+			seen = tv.shots.size()
+			break
+	ck(seen > 0, "the map caught %d shot(s) actually in flight" % seen)
 
 # THE MENU OPENS THE THING YOU CLICKED ON.
 #
@@ -226,7 +300,7 @@ func _bridge_checks(desk: Node) -> void:
 	var br: Node = win.get_meta("content")
 	br.size = Vector2(860, 560)
 	br.refresh()
-	ck(br.rooms.size() == 8, "the bridge painted eight rooms from the API")
+	ck(br.rooms.size() == 9, "the bridge painted nine rooms from the API")
 
 	# --- click the third power pip in the shields room ---
 	var shields := -1

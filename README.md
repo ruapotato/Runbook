@@ -2,9 +2,9 @@
 
 One ship, one fight, and a console that prints every button you press.
 
-A raider has caught you. You have eight reactor bars, six systems that all
-want them, three people whose job is decided by where they stand, and a fire
-in the engine room.
+A raider has caught you. You have eight reactor bars, seven systems that all
+want them, three people whose job is decided by where they stand -- and who
+have to walk there -- and a fire in the engine room.
 
 Under the bridge is a real computer. Every click you make arrives in it as a
 line of text — so by the time you want to write a script, you have already
@@ -116,13 +116,18 @@ type 'help'; every response ends with a lone '.'
 
 ```
 $ make check
-fight:   only shooting      45% won, 86s average
-fight:   actually playing   97% won, 106s average
+fight:   only shooting      32% won, 96s average
+fight:   actually playing  100% won, 129s average
+fight: PASS   they arrive under their own steam
+fight: PASS   having taken 3.4s to walk it
+fight: PASS   a shut door on the way costs longer (6.0s against 3.4s)
+fight: PASS   you cannot teleport through your own shields
+fight: PASS   and their engines take it, not some other room
 fight: PASS  doing nothing but shooting is not enough
 fight: PASS  putting fires out and moving people wins it
-fight: PASS  the decisions are worth 52 points
+fight: PASS  the decisions are worth 68 points
 machine: 12 checks, 0 failed
-client: client_test: 42 checks, 0 failures
+client: client_test: 50 checks, 0 failures
 games: games_test: 10 games, 0 failures
 determinism: PASS  same seed reproduces byte-identically
 determinism: PASS  a different seed produces a different world
@@ -148,14 +153,15 @@ PASS  and the same line showed up in the open terminal, as text
 ## Where the code is
 
 ```
-core/ship.c        the model: rooms, power, crew, fire, air, the raider
+core/ship.c        the model: rooms, power, walking crew, fire, air, the raider
 core/proto.c       the protocol. every command, and there is only one door
 core/recorder.c    watches you play and writes a script
 core/fight.c       the balance harness
 core/box.c         the ship's computer, and the bridge into it
 machine/           a lifted RV64IM machine: cpu, kernel, vfs, disk image
 guest/             what runs ON it, including the Python subset
-game/              the Godot client. bridge.gd is the ship
+game/              the Godot client. bridge.gd is your ship, sensors.gd is
+                   theirs, tactical.gd is the gap between them
 ```
 
 `machine/` is borrowed from NOMINAL and compiles unchanged against a shim, so

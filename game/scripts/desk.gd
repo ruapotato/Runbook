@@ -36,7 +36,9 @@ const UiFont := preload("res://scripts/uifont.gd")
 # glyphs is a set that gave up.
 const Icons  := preload("res://scripts/icons.gd")
 const Clip   := preload("res://scripts/clip.gd")
-const Bridge := preload("res://scripts/bridge.gd")
+const Bridge   := preload("res://scripts/bridge.gd")
+const Sensors  := preload("res://scripts/sensors.gd")
+const Tactical := preload("res://scripts/tactical.gd")
 # NOMINAL's terminal, not the one I wrote and then had to throw away. See the
 # note at the top of that file.
 const Term   := preload("res://scripts/terminal.gd")
@@ -179,14 +181,16 @@ func _tick_world(dt: float) -> void:
 		steps += 1
 	if steps == 0:
 		return
-	# Only the bridge repaints per tick. A file browser does not change
-	# because the ship took a hit, and repainting everything sixty times a
-	# second would cost more than the fight does.
-	var b := _find_window("Bridge")
-	if b != null and is_instance_valid(b):
-		var bc: Node = b.get_meta("content")
-		if bc.has_method("refresh"):
-			bc.refresh()
+	# THE THREE WINDOWS THAT ARE THE FIGHT repaint per tick; nothing else
+	# does. A file browser has not changed because the ship took a hit, and
+	# repainting everything sixty times a second would cost more than the
+	# fight itself.
+	for key in ["Bridge", "Sensors", "Map"]:
+		var wnd := _find_window(str(key))
+		if wnd != null and is_instance_valid(wnd) and wnd.visible:
+			var wc: Node = wnd.get_meta("content")
+			if wc.has_method("refresh"):
+				wc.refresh()
 
 func _process(dt: float) -> void:
 	if api == null or top == null:
@@ -271,6 +275,8 @@ func _icon_rects() -> Array:
 static func _icon_for(kind: String) -> String:
 	match kind:
 		"Bridge":     return "sysmon"
+		"Sensors":    return "svc"
+		"Map":        return "chat"
 		"Terminal":   return "term"
 		"directory":  return "svc"
 		"mail":       return "chat"
@@ -281,6 +287,8 @@ static func _icon_for(kind: String) -> String:
 func _desktop_items() -> Array:
 	_ensure()
 	return [{"label": "Bridge", "kind": "Bridge", "icon": "sysmon"},
+			{"label": "Sensors", "kind": "Sensors", "icon": "svc"},
+			{"label": "Map", "kind": "Map", "icon": "chat"},
 			{"label": "Terminal", "kind": "Terminal", "icon": "term"},
 			{"label": "Files", "kind": "Files", "icon": "files"},
 			{"label": "Editor", "kind": "Editor", "icon": "editor"}]
@@ -432,7 +440,12 @@ const GAMES := [
 func _menu_items(which: int) -> Array:
 	match which:
 		0:
-			var apps := [{"label": "Bridge", "kind": "Bridge", "icon": "sysmon"},
+			var apps := [{"label": "Bridge", "kind": "Bridge", "icon": "sysmon",
+						  "sub": "your ship"},
+						 {"label": "Sensors", "kind": "Sensors", "icon": "svc",
+						  "sub": "theirs"},
+						 {"label": "Map", "kind": "Map", "icon": "chat",
+						  "sub": "the gap"},
 						 {"label": "Terminal", "kind": "Terminal", "icon": "term"},
 						 {"label": "Files", "kind": "Files", "icon": "files"},
 						 {"label": "Script editor", "kind": "Editor", "icon": "editor"},
@@ -666,6 +679,15 @@ func _win(title: String, rect: Rect2, content: Control, icon: String = "app") ->
 	w.set_meta("maxed", false)
 	w.draw.connect(func(): _draw_win(w))
 	add_child(w)
+
+	# A WINDOW CLIPS ITS OWN CONTENTS, which is the one thing every real
+	# window manager does and this one did not. The sensors panel drew its
+	# hint lines past its bottom edge and onto the wallpaper, so text from a
+	# 300-pixel window appeared underneath it -- and every window here paints
+	# itself with draw_* calls, so any of them could do the same at any size a
+	# player happens to drag it to. Clipping is the fix that covers all of
+	# them rather than the one that came up.
+	w.clip_contents = true
 
 	var bar := Control.new()
 	bar.size = Vector2(rect.size.x, TITLE_H)
@@ -1091,6 +1113,14 @@ func _launch(kind: String) -> void:
 		_win("Bridge", Rect2(at, Vector2(860, 560)), b, "sysmon")
 		if is_inside_tree():
 			b.grab_focus()
+	elif kind == "Sensors":
+		var sv := Sensors.new()
+		sv.setup(api, func(line: String) -> void: _echo_command(line))
+		_win("Sensors", Rect2(at, Vector2(660, 430)), sv, "svc")
+	elif kind == "Map":
+		var tv := Tactical.new()
+		tv.setup(api)
+		_win("Map", Rect2(at, Vector2(700, 360)), tv, "chat")
 	elif kind == "Terminal":
 		var t := Term.new()
 		# The terminal knows nothing about this game: it takes a line, hands

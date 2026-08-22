@@ -42,22 +42,31 @@ func _tick() -> void:
 			api.exec("resume")
 			for i in range(180):
 				api.exec("tick 0.25")
+			# Catch a volley actually in the air, so the map has something
+			# to show. Ten ticks is a fifth of a second; the flight is a
+			# whole one.
+			for i in range(400):
+				api.exec("tick 0.05")
+				if api.objects(api.exec("shots")).size() > 0:
+					break
 			api.exec("pause")
 			api.exec("send Vane 7")
 
 			desk._launch("Bridge")
+			desk._launch("Sensors")
+			desk._launch("Map")
 			desk._launch("Terminal")
-			desk._launch("Files")
 
-			_place(desk, "Bridge", Vector2(8, 30), Vector2(820, 520))
-			_place(desk, "Files", Vector2(840, 30), Vector2(432, 300))
-			_place(desk, "Terminal", Vector2(300, 470), Vector2(880, 300))
+			_place(desk, "Bridge", Vector2(6, 28), Vector2(800, 470))
+			_place(desk, "Map", Vector2(812, 28), Vector2(462, 240))
+			_place(desk, "Sensors", Vector2(812, 274), Vector2(462, 300))
+			_place(desk, "Terminal", Vector2(200, 506), Vector2(760, 268))
 
-			var fw: Node = desk._find_window("Files")
-			if fw != null:
-				var fc: Node = fw.get_meta("content")
-				fc.cwd = "/root/examples"
-				fc.refresh()
+			for key in ["Sensors", "Map"]:
+				var kw: Node = desk._find_window(str(key))
+				if kw != null:
+					var kc: Node = kw.get_meta("content")
+					kc.refresh()
 			var bw: Node = desk._find_window("Bridge")
 			if bw != null:
 				var bc: Node = bw.get_meta("content")

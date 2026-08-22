@@ -126,18 +126,26 @@ func _yes(d: Dictionary, k: String) -> bool:
 # Rooms are different sizes because they are different rooms.
 #
 # Grid units, +x forward. The hull is 9 wide and 4.8 deep.
-const DECK_W := 9.0
+const DECK_W := 10.4
 const DECK_H := 4.8
 const PLAN := {
-	0: Rect2(1.4, 0.0, 2.0, 1.9),   # reactor  -- amidships, upper
-	1: Rect2(5.8, 0.0, 1.9, 2.4),   # shields  -- forward, upper
-	2: Rect2(0.0, 1.0, 1.4, 2.8),   # engines  -- aft
-	3: Rect2(5.8, 2.4, 1.9, 2.4),   # weapons  -- forward, lower
-	4: Rect2(3.4, 0.0, 2.4, 1.9),   # oxygen   -- amidships, upper
-	5: Rect2(1.4, 2.9, 2.0, 1.9),   # medbay   -- amidships, lower
-	6: Rect2(3.4, 2.9, 2.4, 1.9),   # computer -- amidships, lower
-	7: Rect2(1.4, 1.9, 4.4, 1.0),   # corridor -- the spine
+	0: Rect2(1.4, 0.0, 2.0, 1.9),    # reactor    -- amidships, upper
+	1: Rect2(5.8, 0.0, 1.9, 2.4),    # shields    -- forward, upper
+	2: Rect2(0.0, 1.0, 1.4, 2.8),    # engines    -- aft
+	3: Rect2(5.8, 2.4, 1.9, 2.4),    # weapons    -- forward, lower
+	4: Rect2(3.4, 0.0, 2.4, 1.9),    # oxygen     -- amidships, upper
+	5: Rect2(1.4, 2.9, 2.0, 1.9),    # medbay     -- amidships, lower
+	6: Rect2(3.4, 2.9, 2.4, 1.9),    # computer   -- amidships, lower
+	7: Rect2(1.4, 1.9, 4.4, 1.0),    # corridor   -- the spine
+	8: Rect2(7.75, 1.7, 1.2, 1.4),   # teleporter -- the pad, in the bow
 }
+
+# THIS AND core/ship.c's LINKS TABLE ARE THE SAME DECK PLAN.
+#
+# The model walks crew and spreads fire along an adjacency list; this draws
+# the rooms. If they disagree the game becomes unreadable in the worst
+# possible way -- everything works, and nothing is where it looks. Anything
+# moved here has to move there.
 
 func _console_h() -> float:
 	return 108.0
@@ -226,9 +234,9 @@ func _draw_hull() -> void:
 		o + Vector2(0.0, 0.9) * s,
 		o + Vector2(0.55, 0.0) * s,
 		o + Vector2(7.7, 0.0) * s,
-		o + Vector2(8.6, 1.5) * s,        # nose, upper
-		o + Vector2(9.0, 2.4) * s,        # the point
-		o + Vector2(8.6, 3.3) * s,        # nose, lower
+		o + Vector2(8.6, 1.2) * s,        # shoulder, upper
+		o + Vector2(10.4, 2.4) * s,       # the point
+		o + Vector2(8.6, 3.6) * s,        # shoulder, lower
 		o + Vector2(7.7, 4.8) * s,
 		o + Vector2(0.55, 4.8) * s,
 		o + Vector2(0.0, 3.9) * s,
@@ -243,11 +251,19 @@ func _draw_hull() -> void:
 	# twice as tall as the ship, so it left the window at the top and bottom
 	# and read as two unexplained curves rather than as a bubble around
 	# anything. The ring has to hug the hull to be a shield.
+	# CLAMPED TO THE SPACE THE DECK IS DRAWN IN. Sized off the deck alone,
+	# the rings ran up into the status strip and across the raider's own
+	# health bar -- the shield bubble does not belong on top of the numbers.
 	var sh := _i(ship, "shields")
 	var ctr := d.get_center()
+	var head := 58.0
+	var room_above := ctr.y - head - 6.0
+	var room_below := (size.y - _console_h() - 6.0) - ctr.y
+	var ry_max: float = maxf(20.0, minf(room_above, room_below))
 	for i in range(sh):
-		_ring(ctr, (DECK_W * 0.55 + i * 0.18) * s, (DECK_H * 0.66 + i * 0.18) * s,
-			  Color(SHIELD.r, SHIELD.g, SHIELD.b, 0.55 - i * 0.11))
+		var rx: float = minf((DECK_W * 0.55 + i * 0.18) * s, ctr.x - 6.0)
+		var ry: float = minf((DECK_H * 0.66 + i * 0.18) * s, ry_max)
+		_ring(ctr, rx, ry, Color(SHIELD.r, SHIELD.g, SHIELD.b, 0.55 - i * 0.11))
 
 func _ring(c: Vector2, rx: float, ry: float, col: Color) -> void:
 	var pts := PackedVector2Array()
@@ -376,6 +392,14 @@ func _draw_system_glyph(r: Rect2, sys: String, bars: int) -> void:
 		"medbay":
 			draw_rect(Rect2(c.x - u * 0.3, c.y - u, u * 0.6, u * 2.0), lit)
 			draw_rect(Rect2(c.x - u, c.y - u * 0.3, u * 2.0, u * 0.6), lit)
+		"teleporter":
+			# A pad, seen from above, with somebody standing on it.
+			draw_arc(c, u * 1.3, 0, TAU, 24, lit, 2.0)
+			draw_arc(c, u * 0.8, 0, TAU, 20, lit, 1.0)
+			for i in range(4):
+				var a := TAU * float(i) / 4.0 + PI / 4.0
+				draw_line(c + Vector2(cos(a), sin(a)) * u * 1.3,
+						  c + Vector2(cos(a), sin(a)) * u * 1.9, lit, 2.0)
 		"computer":
 			draw_rect(Rect2(c.x - u * 1.2, c.y - u * 0.9, u * 2.4, u * 1.6), Color(0, 0, 0, 0))
 			draw_rect(Rect2(c.x - u * 1.2, c.y - u * 0.9, u * 2.4, u * 1.6), lit, false, 2.0)
@@ -393,6 +417,13 @@ func _door_mark(n: int) -> Rect2:
 	var d := _deck()
 	var s := _scale()
 	var p: Rect2 = PLAN[n]
+	if n == 8:
+		# The pad is forward of shields and weapons, so its door is on its
+		# aft wall rather than on the spine.
+		var pp: Rect2 = PLAN[8]
+		return Rect2(d.position.x + pp.position.x * s - 3,
+					 d.position.y + (pp.position.y + pp.size.y / 2.0) * s - 0.35 * s,
+					 6, 0.7 * s)
 	var spine: Rect2 = PLAN[7]
 	var cx: float = clampf(p.position.x + p.size.x / 2.0,
 						   spine.position.x + 0.3, spine.position.x + spine.size.x - 0.3)
@@ -435,16 +466,18 @@ func floor_tint() -> Color:
 # WHERE A PERSON STANDS. Inside the room, spread out, so two people in the
 # reactor are two dots and not one dot on top of another.
 func _crew_pos(name: String) -> Vector2:
-	var idx := 0
 	var rn := -1
+	var step := -1
+	var across := 0.0
 	for raw in crew:
 		var c: Dictionary = raw
 		if not _yes(c, "alive"):
 			continue
 		if str(c.get("name", "")) == name:
 			rn = _i(c, "room")
+			step = _i(c, "walking_to", -1)
+			across = _f(c, "across") / 100.0
 			break
-		idx += 1
 	if rn < 0:
 		return Vector2.ZERO
 	# Count who else is in that room ahead of this one.
@@ -459,8 +492,17 @@ func _crew_pos(name: String) -> Vector2:
 			before += 1
 	var r := _room_rect(rn)
 	var s := _scale()
-	return Vector2(r.position.x + 0.35 * s + before * 0.55 * s,
-				   r.position.y + r.size.y - 0.72 * s)
+	var here := Vector2(r.position.x + 0.35 * s + before * 0.55 * s,
+						r.position.y + r.size.y - 0.72 * s)
+	if step < 0 or not PLAN.has(step):
+		return here
+	# WALKING IS DRAWN, NOT IMPLIED. Somebody crossing a doorway is shown in
+	# the doorway, moving, because "they take four seconds to get there" is
+	# only a real cost if you can watch it being paid.
+	var nr := _room_rect(step)
+	var there := Vector2(nr.position.x + nr.size.x * 0.5,
+						 nr.position.y + nr.size.y - 0.72 * s)
+	return here.lerp(there, clampf(across, 0.0, 1.0))
 
 func _draw_crew() -> void:
 	for raw in crew:
@@ -479,6 +521,14 @@ func _draw_crew() -> void:
 		draw_colored_polygon(PackedVector2Array([
 			at + Vector2(-5, 4), at + Vector2(-3.5, -3),
 			at + Vector2(3.5, -3), at + Vector2(5, 4)]), col)
+		# WHERE THEY ARE GOING, as a line to the room. Three people crossing
+		# a ship at once is unreadable without it -- you cannot tell who is
+		# heading for the fire and who is wandering back from one.
+		var dest := _i(c, "dest", -1)
+		if dest >= 0 and dest != _i(c, "room") and PLAN.has(dest):
+			var dr := _room_rect(dest)
+			draw_line(at, dr.get_center(), Color(col.r, col.g, col.b, 0.35), 1.0)
+			draw_arc(dr.get_center(), 6, 0, TAU, 16, Color(col.r, col.g, col.b, 0.5), 1.0)
 		if name == picked:
 			draw_arc(at, 13, 0, TAU, 24, POWER, 2.0)
 		# A BACKING PLATE UNDER THE NAME. Rooms have labels too, and in the
