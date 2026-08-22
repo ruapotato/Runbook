@@ -206,7 +206,58 @@ static void check_rules(void)
     rck(eng_dmg > 0 && other_dmg == 0,
         "and their engines take it, not some other room");
 
+    /* --- venting kills a fire, and whoever is in the room --- */
+    World *w5 = world_new(424242);
+    Ship *s5 = &w5->ship;
+    ship_pause(s5, false);
+    int burn = ship_room_of(s5, SYS_MEDBAY);
+    s5->room[burn].fire = 0.9;
+    ship_door(s5, burn, false, e, sizeof e);
+    rck(ship_vent(s5, burn, true, e, sizeof e), "a room can be opened to space");
+    for (int i = 0; i < 150; i++) ship_tick(s5, 0.1);
+    rck(s5->room[burn].fire <= 0.0, "and the fire goes out on its own, with nobody in there");
+    rck(s5->room[burn].oxygen < 0.05, "having taken the air with it");
+
+    /* And it is lethal, which is the price. */
+    World *w6 = world_new(424242);
+    Ship *s6 = &w6->ship;
+    ship_pause(s6, false);
+    int where = s6->crew[0].room;
+    ship_door(s6, where, false, e, sizeof e);
+    ship_vent(s6, where, true, e, sizeof e);
+    double h0 = s6->crew[0].health;
+    for (int i = 0; i < 200; i++) ship_tick(s6, 0.1);
+    rck(s6->crew[0].health < h0 - 0.2,
+        "somebody left in a vented room suffocates (%.0f%% -> %.0f%%)",
+        h0 * 100, s6->crew[0].health * 100);
+
+    /* --- a second pair of hands is worth something --- */
+    World *w7 = world_new(424242);
+    Ship *s7 = &w7->ship;
+    ship_pause(s7, false);
+    int wpn = ship_room_of(s7, SYS_WEAPONS);
+    for (int i = 0; i < s7->ncrew; i++) { s7->crew[i].room = wpn; s7->crew[i].dest = wpn; }
+    /* MEASURED BEFORE IT CAPS. At a hundred ticks both of them are simply
+     * charged and the comparison says nothing -- which the gate reported as
+     * "100% against 100%", correctly and uselessly. Twenty-five ticks is
+     * inside the ramp for both. */
+    for (int i = 0; i < 25; i++) ship_tick(s7, 0.1);
+    double crowded = s7->weapon_charge;
+
+    World *w8 = world_new(424242);
+    Ship *s8 = &w8->ship;
+    ship_pause(s8, false);
+    for (int i = 0; i < s8->ncrew; i++) {
+        s8->crew[i].room = ship_room_of(s8, SYS_MEDBAY);
+        s8->crew[i].dest = s8->crew[i].room;
+    }
+    for (int i = 0; i < 25; i++) ship_tick(s8, 0.1);
+    rck(crowded > s8->weapon_charge * 1.2,
+        "three people on the guns charge them faster than none (%d%% against %d%%)",
+        (int)(crowded * 100), (int)(s8->weapon_charge * 100));
+
     world_free(w); world_free(w2); world_free(w3); world_free(w4);
+    world_free(w5); world_free(w6); world_free(w7); world_free(w8);
 }
 
 /* ------------------------------------------------------------- one fight */

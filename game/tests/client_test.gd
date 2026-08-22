@@ -80,15 +80,32 @@ func _desktop_checks() -> void:
 	desk.size = Vector2(1280, 800)
 	desk._relayout_desktop()
 
-	desk._launch("Bridge")
-	desk._launch("Terminal")
+	# THE FIGHT IS ON SCREEN BEFORE ANYBODY CLICKS ANYTHING.
+	#
+	# Sensors used to live in a menu, which meant the raider -- the thing
+	# shooting at you -- was invisible until you went looking for it. All
+	# three of these are open at boot now, and that is a promise worth an
+	# assertion because it is made in _ready() where nothing else would catch
+	# it breaking.
+	desk.open_the_fight()
+	var booted: Array = []
+	for key in ["Bridge", "Sensors", "Terminal"]:
+		if desk._find_window(str(key)) != null:
+			booted.append(key)
+	ck(booted.size() == 3, "the bridge, the sensors and a terminal are open at boot (%s)" % str(booted))
+
 	desk._launch("Files")
-	ck(desk.windows.size() == 3, "three windows opened")
+	ck(desk.windows.size() == 4, "and opening a fourth gives four")
 	if desk.windows.size() < 3:
 		return
 
-	var a: Control = desk.windows[0]
-	var b: Control = desk.windows[1]
+	# THE CASCADE IS TESTED ON WINDOWS THAT CASCADED. The three the desktop
+	# opens at boot are deliberately laid out to fit, so asserting that THEY
+	# overlap would be asserting the opposite of what boot is for. Everything
+	# opened afterwards cascades, which is the behaviour this checks.
+	desk._launch("Editor")
+	var a: Control = desk.windows[desk.windows.size() - 2]
+	var b: Control = desk.windows[desk.windows.size() - 1]
 	ck(a.position != b.position, "windows cascade rather than stacking on one spot")
 	# OVERLAP IS THE PROOF. A tiling layout gives windows that never intersect;
 	# a floating one gives windows that cascade over each other until somebody
@@ -143,7 +160,9 @@ func _desktop_checks() -> void:
 	# Minimise leaves it in the tasklist, which is where you get it back.
 	b.visible = false
 	b.set_meta("shown", false)
-	ck(desk._tasklist().size() == 3, "a minimised window is still in the tasklist")
+	var listed: int = desk._tasklist().size()
+	ck(listed == desk.windows.size(),
+	   "a minimised window is still in the tasklist (%d of %d)" % [listed, desk.windows.size()])
 
 	# The workspace pager actually moves windows out of sight.
 	desk._go_workspace(1)

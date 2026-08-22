@@ -1114,6 +1114,41 @@ static const Package PKG_HOME = {
         "  shield is the moment the pad works, and that is also the moment you most\n"
         "  need somebody somewhere else. Keep a bar in it and remember it exists.\n"
         "\n"
+        "THE AIRLOCKS\n"
+        "  Every room that touches the hull has a hatch on its outer wall. Open it\n"
+        "  and the room goes to vacuum: the fire dies on its own, you did not have\n"
+        "  to send anybody, and nobody got hurt.\n"
+        "\n"
+        "  Shut the DOOR first or you vent the whole ship through the corridor.\n"
+        "  And check who is in there, because they will not leave on their own and\n"
+        "  they will not survive it.\n"
+        "\n"
+        "  `rb vent weapons open`, then `rb vent weapons shut` when it is out.\n"
+        "\n"
+        "PUTTING FIRES OUT BY HAND COSTS BLOOD\n"
+        "  Whoever fights it comes out of it hurt. Two fires and they need the\n"
+        "  medbay, and somebody in the medbay is not doing anything else.\n"
+        "\n"
+        "  Which is the argument for the airlocks: venting costs air, and air is\n"
+        "  free once the scrubbers catch up.\n"
+        "\n"
+        "A SECOND PAIR OF HANDS\n"
+        "  Everybody standing in a room makes that room better -- shields come\n"
+        "  back faster, the gun charges quicker, the engines dodge more. Up to\n"
+        "  three of them. Putting the whole crew on the guns is a real plan, and\n"
+        "  so is leaving nobody anywhere.\n"
+        "\n"
+        "THE SHIP IS A DIRECTORY\n"
+        "  This is the part I wish somebody had told me on day one.\n"
+        "\n"
+        "    cat /dev/ship/ready                  -> yes or no\n"
+        "    echo 3 > /dev/ship/rooms/shields/power\n"
+        "    echo open > /dev/ship/rooms/medbay/vent\n"
+        "    echo medbay > /dev/crew/Vane/room\n"
+        "\n"
+        "  No API, no library. `ls /dev/ship` and read the names. Every file is\n"
+        "  one value, so the shell can do all of it -- see bin/watch.sh.\n"
+        "\n"
         "WHAT TO SHOOT AT\n"
         "  Their hull is the only thing that ends it, which is exactly why aiming\n"
         "  there is usually wrong. `rb enemy.rooms` lists what they have.\n"
@@ -1642,6 +1677,7 @@ static const Package PKG_SHELL = {
       { "/root/examples/selftest.py", NULL, 0644, NULL },
       { "/root/examples/selftest.sh", NULL, 0755, NULL },
       { "/root/examples/gunner.py", NULL, 0644, NULL },
+      { "/root/examples/gunner.sh", NULL, 0755, NULL },
       { "/root/examples/firewatch.py", NULL, 0644, NULL },
       { "/bin/ed", NULL, 0755, NULL },
       { "/bin/echo", NULL, 0755, NULL },
@@ -1664,6 +1700,8 @@ static const Package PKG_SHELL = {
        * `rev` is here because it is two hundred bytes and it is the shortest
        * proof that a pipeline really carries bytes: rev | rev is identity. */
       { "/bin/seq", NULL, 0755, NULL },
+      { "/bin/test", NULL, 0755, NULL },
+      { "/bin/[", NULL, 0755, NULL },
       { "/bin/rev", NULL, 0755, NULL },
       { "/bin/uname", NULL, 0755, NULL },
       { "/bin/whoami", NULL, 0755, NULL },
@@ -1734,6 +1772,9 @@ static const Package PKG_SHELL = {
         "\n"
         "  builtins        cd  pwd  bind  unbind  echo  help\n"
         "  for             for i in a b c; do ... ; done      $i expands\n"
+        "  if              if CMD; then ... ; else ... ; fi   0 is true\n"
+        "  while           while CMD; do ... ; done           re-read each turn\n"
+        "  test            test a = b, [ a = b ], -eq -lt -f -d -n -z\n"
         "  variables       NAME=value, $NAME, and $? for the last status\n"
         "  substitution    $(command) and `command`\n"
         "  redirection     > and >>\n"
@@ -1742,7 +1783,7 @@ static const Package PKG_SHELL = {
         "  globbing        * and ? against a directory\n"
         "  quoting         single, double, and backslash\n"
         "\n"
-        "There are no aliases, no functions, no if, and no arithmetic. The search\n"
+        "There are no aliases, no functions, and no arithmetic. The search\n"
         "path is inside the shell -- /bin, /usr/bin, /sbin, /usr/sbin, in that order\n"
         "-- and no profile changes it. Name anything else by its path.\n"
         "\n"
@@ -1850,7 +1891,7 @@ static const Package PKG_SHELL = {
         "\n"
         "1.4  -- find and netstat, because everybody reached for them and they were\n"
         "       not there.\n", 0644, NULL },
-    }, 63   /* RUNBOOK: 55 -> 63: /bin/rb, /bin/py and six examples */
+    }, 66   /* RUNBOOK: 55 -> 66: /bin/rb, /bin/py, /bin/test + [, seven examples */
 };
 
 
@@ -3878,6 +3919,7 @@ void image_generated(const Machine *m, const char *path, Buf *out)
         "\n"
         "  sh /root/examples/watch.sh          what is going on\n"
         "  run /root/examples/gunner.py        fires the gun for you, forever\n"
+        "  run /root/examples/gunner.sh        the same thing, in the shell\n"
         "  run /root/examples/firewatch.py     sends somebody to the worst fire\n"
         "\n"
         "This is the ship's computer. It is a real machine: ls, cat, grep, pipes, for\n"
@@ -4195,6 +4237,33 @@ void image_generated(const Machine *m, const char *path, Buf *out)
         "\n"
         "echo \"selftest.sh: done\"\n"
         "\n");
+    else if (strcmp(path, "/root/examples/gunner.sh") == 0)
+        buf_puts(out,
+        "# /root/examples/gunner.sh -- the same job as gunner.py, in the shell.\n"
+        "#\n"
+        "#   run /root/examples/gunner.sh\n"
+        "#\n"
+        "# THERE IS NO API HERE. No library, no bindings, nothing imported. The\n"
+        "# ship is a directory, so the shell you already have is enough:\n"
+        "#\n"
+        "#   cat /dev/ship/ready              -> yes or no\n"
+        "#   echo shields > /dev/ship/fire    -> shoot at their shields\n"
+        "#\n"
+        "# That is the whole interface. `ls /dev/ship` is the documentation, and\n"
+        "# every file in there is one value so nothing needs parsing.\n"
+        "\n"
+        "while true; do\n"
+        "    if [ $(cat /dev/ship/over) = yes ]; then exit 0; fi\n"
+        "    if [ $(cat /dev/ship/ready) = yes ]; then\n"
+        "        # Their shields first, so the next one gets through to the hull.\n"
+        "        if [ $(cat /dev/ship/enemy/shields) = 0 ]; then\n"
+        "            echo weapons > /dev/ship/fire\n"
+        "        else\n"
+        "            echo shields > /dev/ship/fire\n"
+        "        fi\n"
+        "    fi\n"
+        "done\n"
+        "\n");
     else if (strcmp(path, "/root/examples/gunner.py") == 0)
         buf_puts(out,
         "# /root/examples/gunner.py\n"
@@ -4281,6 +4350,12 @@ void image_generated(const Machine *m, const char *path, Buf *out)
         buf_put(out, (const char *)GUEST_REV, GUEST_REV_LEN);
     else if (strcmp(path, "/bin/seq") == 0)
         buf_put(out, (const char *)GUEST_SEQ, GUEST_SEQ_LEN);
+    /* ONE PROGRAM, TWO NAMES, which is how every unix has shipped it since
+     * v7: `[` is test, and it is a program rather than syntax. Somebody who
+     * types `[ a = a ]` and is told "[: command not found" concludes the
+     * shell cannot compare things. */
+    else if (strcmp(path, "/bin/test") == 0 || strcmp(path, "/bin/[") == 0)
+        buf_put(out, (const char *)GUEST_TEST, GUEST_TEST_LEN);
     else if (strcmp(path, "/usr/bin/rot13") == 0)
         buf_put(out, (const char *)GUEST_ROT13, GUEST_ROT13_LEN);
     else if (strcmp(path, "/bin/uname") == 0)

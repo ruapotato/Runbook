@@ -38,8 +38,11 @@ one question that matters, which is §5.
 
 These came from the person the game is for, and they are not open.
 
-1. **Real time.** With a pause. FTL was right: a real-time game can be about
-   thinking, as long as thinking is free.
+1. **Real time.** It starts running, not paused -- a keystroke between the
+   player and the game makes interface trivia the first thing they learn.
+   Pause is still there and still free, because FTL was right that a
+   real-time game can be about thinking; it is a thing you reach for, not a
+   door you open to begin.
 2. **One ship, one fight.** No campaign, no map, no meta-progression of the
    usual kind.
 3. **The filesystem survives death.** You lose the ship. You do not lose your
@@ -136,6 +139,30 @@ fires volleys, which is what makes shields feel fine and then suddenly not.
 
 The dials are all in `core/ship.c` with the harness result next to them.
 
+## 6b. The ship is a directory
+
+Plan 9's idea, and the reason this game has a real machine under it. Every
+value about the ship is a file, one value per file, so nothing needs parsing:
+
+```
+cat /dev/ship/ready                     -> yes
+cat /dev/ship/rooms/weapons/fire        -> 43
+echo 3 > /dev/ship/rooms/shields/power
+echo open > /dev/ship/rooms/medbay/vent
+echo medbay > /dev/crew/Vane/room
+```
+
+There is no second implementation behind any of it: every write ends up in
+`proto_exec`, the same function the buttons and the terminal and `do()` all
+call. So a file accepts exactly what the button accepts, refuses what the
+button refuses, and says the same sentence when it does.
+
+`ls /dev/ship` is the documentation. A ship you can `cat` is a ship you can
+script without being taught an API, and the shell that is already on the disk
+is enough -- which is why `if`, `while` and `/bin/test` were added to it. A
+shell with none of those can only write macros, and a macro cannot look before
+it acts.
+
 ## 7. The machine
 
 Under the bridge is a real RV64IM computer: a disk, an init, a package
@@ -177,7 +204,7 @@ session speaks.
 |---|---|
 | `fight` | the decisions are worth something (§5) |
 | `machine` | the computer boots, the shell works, the language passes its own suite, and a script can fly the ship in real time |
-| `client` | the extension loaded, the windows float, **and every click prints its command** -- including that clicking the raider's weapon room sends `fire weapons`, and that the map catches shots actually in flight |
+| `client` | the bridge, sensors and a terminal are open at boot; the windows float, **and every click prints its command** -- including that clicking the raider's weapon room sends `fire weapons`, and that the map catches shots actually in flight |
 | `games` | the ten mini-games still run |
 | `determinism` | §8 |
 

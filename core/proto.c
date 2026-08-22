@@ -104,7 +104,9 @@ static void cmd_help(Buf *out)
         "  fire [what]             shoot, when the gun is charged. `what` is one\n"
         "                          of their rooms: shields, weapons, engines, or\n"
         "                          hull. `enemy.rooms` lists them\n"
-        "  door <room> open|shut   a shut door stops fire and holds air\n"
+        "  door <room> open|shut   a shut door stops fire spreading and holds air\n"
+        "  vent <room> open|shut   open a room to space. the fire dies on its\n"
+        "                          own and so does anybody still in there\n"
         "  pause / resume          time stops. thinking is free\n"
         "\n"
         "  ship                    the whole ship, as one object\n"
@@ -116,6 +118,18 @@ static void cmd_help(Buf *out)
         "  log                     what just happened\n"
         "\n"
         "  sh <command>            a shell on the ship's computer\n"
+        "\n"
+        "THE SHIP IS ALSO A DIRECTORY. Every value above is a file:\n"
+        "\n"
+        "  cat /dev/ship/ready              yes, when the gun is charged\n"
+        "  cat /dev/ship/rooms/weapons/fire how bad it is in there\n"
+        "  echo 3 > /dev/ship/rooms/shields/power\n"
+        "  echo open > /dev/ship/rooms/medbay/vent\n"
+        "  echo medbay > /dev/crew/Vane/room\n"
+        "\n"
+        "  ls /dev/ship is the whole documentation. Every file holds one value,\n"
+        "  so nothing needs parsing and the shell is enough.\n"
+        "\n"
         "  run <script>            start a script running IN the fight\n"
         "\n"
         "  rec.start / rec.stop    watch what you do and write it down\n"
@@ -222,6 +236,30 @@ bool proto_exec(Session *s, const char *line, Buf *out)
         return true;
     }
 
+    /* VENT. Deliberately a separate verb from `door`, because they are
+     * different decisions with different victims: a shut door contains a
+     * fire, an open vent kills it -- and kills whoever is standing in the
+     * room, which a door never does. */
+    if (!strcmp(cmd, "vent")) {
+        if (argc < 3) { err(out, "vent <room> open|shut"); return true; }
+        int room = atoi(argv[1]);
+        for (int i = 0; i < sh->nroom; i++)
+            if (!strcmp(sh->room[i].name, argv[1])) room = i;
+        bool open = !strcmp(argv[2], "open");
+        if (!ship_vent(sh, room, open, e, sizeof e)) { err(out, "%s", e); return true; }
+        recorder_step(w, line);
+        if (!open) { ok(out, "%s sealed", sh->room[room].name); return true; }
+        /* WHO IS IN THERE, said at the moment it matters. The game knows and
+         * the player is looking at three other things. */
+        int inside = 0;
+        for (int i = 0; i < sh->ncrew; i++)
+            if (sh->crew[i].alive && sh->crew[i].room == room) inside++;
+        if (inside) ok(out, "%s open to space -- %d aboard in there, get them out",
+                       sh->room[room].name, inside);
+        else ok(out, "%s open to space", sh->room[room].name);
+        return true;
+    }
+
     if (!strcmp(cmd, "pause"))  { ship_pause(sh, true);  ok(out, "paused");  return true; }
     if (!strcmp(cmd, "resume")) { ship_pause(sh, false); ok(out, "running"); return true; }
 
@@ -255,10 +293,12 @@ bool proto_exec(Session *s, const char *line, Buf *out)
         buf_puts(out, "+OK status\n");
         buf_printf(out, "{\"ship\":\"%s\",\"hull\":%d,\"hull_max\":%d,\"shields\":%d,"
                         "\"power_free\":%d,\"power_total\":%d,\"weapon\":%d,\"clock\":%d,"
-                        "\"evade\":%d,\"paused\":%s,\"over\":%s,\"won\":%s}\n",
+                        "\"shields_max\":%d,\"shield_in\":%d,\"evade\":%d,"
+                        "\"paused\":%s,\"over\":%s,\"won\":%s}\n",
                    sh->name, (int)sh->hull, (int)sh->hull_max, sh->shields,
                    ship_power_free(sh), ship_power_total(sh), (int)(sh->weapon_charge * 100),
-                   (int)sh->clock, (int)(ship_evade(sh) * 100), sh->paused ? "true" : "false",
+                   (int)sh->clock, ship_shields_max(sh), (int)(ship_shield_in(sh) * 10),
+                   (int)(ship_evade(sh) * 100), sh->paused ? "true" : "false",
                    sh->over ? "true" : "false", sh->won ? "true" : "false");
         buf_puts(out, ".\n");
         return true;
@@ -267,10 +307,11 @@ bool proto_exec(Session *s, const char *line, Buf *out)
     if (!strcmp(cmd, "enemy")) {
         buf_puts(out, "+OK enemy\n");
         buf_printf(out, "{\"name\":\"%s\",\"hull\":%d,\"hull_max\":%d,\"shields\":%d,"
-                        "\"shields_max\":%d,\"charge\":%d,\"evade\":%d}\n",
+                        "\"shields_max\":%d,\"charge\":%d,\"fires_in\":%d,\"evade\":%d}\n",
                    sh->enemy.name, (int)sh->enemy.hull, (int)sh->enemy.hull_max,
                    sh->enemy.shields, sh->enemy.shields_max,
-                   (int)(sh->enemy.charge * 100), (int)(ship_enemy_evade(sh) * 100));
+                   (int)(sh->enemy.charge * 100), (int)(ship_enemy_fires_in(sh) * 10),
+                   (int)(ship_enemy_evade(sh) * 100));
         buf_puts(out, ".\n");
         return true;
     }
@@ -280,10 +321,12 @@ bool proto_exec(Session *s, const char *line, Buf *out)
         for (int i = 0; i < sh->nroom; i++) {
             const Room *r = &sh->room[i];
             buf_printf(out, "{\"n\":%d,\"name\":\"%s\",\"system\":\"%s\",\"bars\":%d,\"cap\":%d,"
-                            "\"damage\":%d,\"oxygen\":%d,\"fire\":%d,\"breach\":%s,\"door\":\"%s\"}\n",
+                            "\"damage\":%d,\"oxygen\":%d,\"fire\":%d,\"breach\":%s,"
+                            "\"door\":\"%s\",\"vent\":\"%s\",\"crew\":%d}\n",
                        i, r->name, sys_name(r->sys.kind), r->sys.bars, r->sys.cap,
                        r->sys.damage, (int)(r->oxygen * 100), (int)(r->fire * 100),
-                       r->breach ? "true" : "false", r->door_open ? "open" : "shut");
+                       r->breach ? "true" : "false", r->door_open ? "open" : "shut",
+                       r->vent_open ? "open" : "shut", r->sys.crew);
         }
         buf_puts(out, ".\n");
         return true;

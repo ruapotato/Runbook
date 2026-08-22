@@ -37,6 +37,7 @@ var events: PackedStringArray = PackedStringArray()
 # a name the console can print.
 var picked := ""
 var hover_room := -1
+var hover_vent := -1
 var console: PackedStringArray = PackedStringArray()
 
 # The palette. Not theme.gd: that file exists to make vendor appliances look
@@ -192,6 +193,7 @@ func _draw() -> void:
 	for i in range(rooms.size()):
 		_draw_room(i)
 	_draw_doors()
+	_draw_vents()
 	_draw_crew()
 	_draw_console()
 
@@ -440,6 +442,50 @@ func _door_mark(n: int) -> Rect2:
 		return Rect2(gx - 3, gy - 0.35 * s, 6, 0.7 * s)
 	return Rect2(gx - 0.35 * s, gy - 3, 0.7 * s, 6)
 
+# THE AIRLOCK HATCH, ON THE OUTER WALL.
+#
+# Every room that touches the hull gets a little hatch drawn on its outside
+# edge. Clicking it opens the room to space: the fire dies on its own and
+# anybody still in there suffocates. It is on the OUTSIDE because that is
+# where an airlock is, and because a control that vents a room must not sit
+# anywhere near the controls that power one.
+func _vent_mark(n: int) -> Rect2:
+	if not PLAN.has(n) or n == 7:
+		return Rect2()
+	var d := _deck()
+	var s := _scale()
+	var p: Rect2 = PLAN[n]
+	var cx := d.position.x + (p.position.x + p.size.x / 2.0) * s
+	# Rooms in the upper half vent through the top of the hull, lower half
+	# through the bottom, and the two forward rooms through the bow.
+	if n == 8:
+		return Rect2(d.position.x + (p.position.x + p.size.x) * s + 2,
+					 d.position.y + (p.position.y + p.size.y / 2.0) * s - 9, 12, 18)
+	if p.position.y + p.size.y <= DECK_H / 2.0 + 0.01:
+		return Rect2(cx - 9, d.position.y + p.position.y * s - 13, 18, 12)
+	if p.position.y >= DECK_H / 2.0 - 0.01:
+		return Rect2(cx - 9, d.position.y + (p.position.y + p.size.y) * s + 1, 18, 12)
+	# The engine room straddles the middle; it vents aft.
+	return Rect2(d.position.x + p.position.x * s - 13,
+				 d.position.y + (p.position.y + p.size.y / 2.0) * s - 9, 12, 18)
+
+func _draw_vents() -> void:
+	for n in range(rooms.size()):
+		var m := _vent_mark(n)
+		if m.size.x <= 0:
+			continue
+		var open := str((rooms[n] as Dictionary).get("vent", "shut")) == "open"
+		draw_rect(m, VACUUM if open else PANEL)
+		draw_rect(m, POWER if n == hover_vent else (SHIELD if open else EDGE),
+				  2.0 if n == hover_vent else 1.0)
+		# An open hatch shows the dark outside and a couple of streaming
+		# marks, so "this room is emptying" is visible from across the screen.
+		if open:
+			for i in range(2):
+				var a := m.get_center() + Vector2(0, -4 + i * 8)
+				draw_line(a, a + (m.get_center() - _room_rect(n).get_center()).normalized() * 10.0,
+						  SHIELD, 1.5)
+
 func _draw_doors() -> void:
 	for n in range(rooms.size()):
 		var m := _door_mark(n)
@@ -540,57 +586,109 @@ func _draw_crew() -> void:
 		_text(at + Vector2(-nw / 2.0, 16), name, col, 10)
 
 # ------------------------------------------------- the status strip
+# THE STATUS STRIP, REBUILT AROUND TIME.
+#
+# A playtester said the interface was unclear about the shields, the hull, and
+# what was going on with the enemy ship -- and they were right, because it was
+# showing PERCENTAGES. "their gun is at 68%" is a number. "they fire in 4s" is
+# a decision, and the difference between those two sentences is most of what
+# makes FTL readable.
+#
+# So: hull with its number on it, shields as discrete layers with the seconds
+# until the next one returns, the gun saying READY rather than 100%, and the
+# raider with a countdown that turns red when it is nearly up.
 func _draw_status() -> void:
 	draw_rect(Rect2(0, 0, size.x, 52), PANEL)
 	draw_line(Vector2(0, 52), Vector2(size.x, 52), EDGE, 1.0)
 
 	var hull := _f(ship, "hull")
 	var hull_max: float = maxf(1.0, _f(ship, "hull_max", 16.0))
-	_text(Vector2(14, 18), str(ship.get("ship", "Kestrel")), INK, 13)
-	_bar(Rect2(14, 26, 150, 12), hull / hull_max, HULL if hull > hull_max * 0.35 else BAD)
-	_text(Vector2(170, 36), "hull %d" % int(hull), DIM, 11)
+	_text(Vector2(14, 16), str(ship.get("ship", "Kestrel")), INK, 13)
 
-	# Shields as pips, because a shield layer is a discrete thing you either
-	# have or do not, and a smooth bar would lie about that.
+	# HULL, SEGMENTED. A smooth bar at 60% is a colour; twelve blocks with
+	# four missing is a count you can act on.
+	_text(Vector2(14, 46), "HULL %d/%d" % [int(hull), int(hull_max)],
+		  HULL if hull > hull_max * 0.35 else BAD, 11)
+	var seg := 118.0 / hull_max
+	for i in range(int(hull_max)):
+		var r := Rect2(14 + i * seg, 24, seg - 2.0, 13)
+		var lit := float(i) < hull
+		draw_rect(r, (HULL if hull > hull_max * 0.35 else BAD) if lit else PANEL.darkened(0.3))
+		draw_rect(r, EDGE, false, 1.0)
+
+	# SHIELDS, WITH THE CLOCK ON THEM. An empty ring that is coming back in
+	# two seconds is a completely different situation from an empty ring that
+	# is not coming back at all, and the old strip drew them identically.
 	var sh := _i(ship, "shields")
-	for i in range(4):
-		var r := Rect2(240 + i * 16, 26, 12, 12)
-		draw_rect(r, SHIELD if i < sh else PANEL)
-		draw_rect(r, EDGE, false, 1.0)
-	_text(Vector2(240, 20), "shields", DIM, 10)
+	var shmax: int = maxi(sh, _i(ship, "shields_max", 0))
+	var sx := 150.0
+	_text(Vector2(sx, 16), "SHIELDS", DIM, 10)
+	for i in range(maxi(shmax, 1)):
+		var c := Vector2(sx + 9 + i * 20, 30)
+		draw_circle(c, 8, SHIELD if i < sh else PANEL.darkened(0.3))
+		draw_arc(c, 8, 0, TAU, 20, EDGE, 1.0)
+	var sin_t := _f(ship, "shield_in") / 10.0
+	if sh < shmax and sin_t > 0.0:
+		_text(Vector2(sx, 46), "+1 in %.1fs" % sin_t, SHIELD, 10)
+	elif shmax == 0:
+		_text(Vector2(sx, 46), "no power", BAD, 10)
+	else:
+		_text(Vector2(sx, 46), "up", DIM, 10)
 
-	_text(Vector2(320, 20), "gun", DIM, 10)
-	_bar(Rect2(320, 26, 90, 12), _f(ship, "weapon") / 100.0, POWER)
+	# THE GUN, AS A WORD WHEN IT MATTERS.
+	var gx := sx + maxi(shmax, 1) * 20 + 24.0
+	var w := _f(ship, "weapon") / 100.0
+	_text(Vector2(gx, 16), "GUN", DIM, 10)
+	_bar(Rect2(gx, 24, 84, 13), w, POWER)
+	_text(Vector2(gx, 46), "READY -- press F" if w >= 1.0 else "%d%%" % int(w * 100),
+		  POWER if w >= 1.0 else DIM, 10)
 
+	# THE REACTOR, and how many bars are going spare.
+	var rx := gx + 100.0
 	var free := _i(ship, "power_free")
-	_text(Vector2(430, 20), "reactor", DIM, 10)
-	for i in range(_i(ship, "power_total", 8)):
-		var r := Rect2(430 + i * 11, 26, 8, 12)
-		draw_rect(r, POWER if i < free else PANEL)
+	var total := _i(ship, "power_total", 8)
+	_text(Vector2(rx, 16), "REACTOR", DIM, 10)
+	for i in range(total):
+		var r := Rect2(rx + i * 11, 24, 8, 13)
+		draw_rect(r, POWER if i < free else PANEL.darkened(0.3))
 		draw_rect(r, EDGE, false, 1.0)
+	_text(Vector2(rx, 46), "%d spare" % free, POWER if free > 0 else DIM, 10)
 
-	# THE RAIDER, DRAWN AS A SHIP. It is the thing shooting at you and it was
-	# two bars and a word; now it is a silhouette pointing back at you, so the
-	# top of the screen has two ships on it and the fight has a direction.
-	var ex := size.x - 276.0
-	var nose := Vector2(ex - 14, 26)
-	draw_colored_polygon(PackedVector2Array([
-		nose, nose + Vector2(22, -11), nose + Vector2(34, -6),
-		nose + Vector2(34, 6), nose + Vector2(22, 11)]), BAD.darkened(0.25))
-	draw_polyline(PackedVector2Array([
-		nose, nose + Vector2(22, -11), nose + Vector2(34, -6),
-		nose + Vector2(34, 6), nose + Vector2(22, 11), nose]), BAD, 1.5)
+	# THEM. Name, hull, and the countdown -- which is the single most useful
+	# number on this screen and did not exist until a playtest asked what was
+	# going on with the enemy ship.
+	var ex := size.x - 250.0
+	var nose := Vector2(ex - 16, 30)
+	var poly := PackedVector2Array([
+		nose, nose + Vector2(20, -10), nose + Vector2(31, -5),
+		nose + Vector2(31, 5), nose + Vector2(20, 10)])
+	draw_colored_polygon(poly, BAD.darkened(0.3))
+	draw_polyline(poly + PackedVector2Array([poly[0]]), BAD, 1.5)
 
-	_text(Vector2(ex + 40, 18), str(enemy.get("name", "raider")), BAD, 12)
-	_bar(Rect2(ex + 40, 26, 96, 12),
-		 _f(enemy, "hull") / maxf(1.0, _f(enemy, "hull_max", 18.0)), BAD)
-	_text(Vector2(ex + 144, 20), "their gun", DIM, 10)
-	_bar(Rect2(ex + 144, 26, 96, 12), _f(enemy, "charge") / 100.0, FIRE)
+	var ehull := _f(enemy, "hull")
+	var emax: float = maxf(1.0, _f(enemy, "hull_max", 18.0))
+	_text(Vector2(ex + 24, 16), str(enemy.get("name", "raider")), BAD, 12)
+	_bar(Rect2(ex + 24, 24, 100, 13), ehull / emax, BAD)
+	_text(Vector2(ex + 130, 34), "%d/%d" % [int(ehull), int(emax)], DIM, 11)
+
+	var esh := _i(enemy, "shields")
+	for i in range(_i(enemy, "shields_max", 2)):
+		var c := Vector2(ex + 30 + i * 16, 46)
+		draw_circle(c, 5, SHIELD if i < esh else PANEL.darkened(0.3))
+
+	var fin := _f(enemy, "fires_in") / 10.0
+	if fin < 0.0:
+		_text(Vector2(ex + 90, 48), "GUN OUT", HULL, 11)
+	else:
+		_text(Vector2(ex + 90, 48), "fires in %.1fs" % fin,
+			  FIRE if fin < 3.0 else DIM, 11)
 
 	var clock := _i(ship, "clock")
 	var paused := _yes(ship, "paused")
-	var st := "PAUSED — space to fly" if paused else "%d:%02d" % [clock / 60, clock % 60]
-	_text(Vector2(size.x / 2.0 - 60, 46), st, POWER if paused else DIM, 11)
+	if paused:
+		_text(Vector2(size.x / 2.0 - 34, 46), "PAUSED", POWER, 12)
+	else:
+		_text(Vector2(size.x / 2.0 - 20, 46), "%d:%02d" % [clock / 60, clock % 60], DIM, 11)
 
 # THE CONSOLE. Everything above prints into here, and here is the only place
 # the player is ever taught the syntax.
@@ -623,9 +721,15 @@ func _draw_console() -> void:
 # ------------------------------------------------------------- interaction
 func _gui_input(e: InputEvent) -> void:
 	if e is InputEventMouseMotion:
+		var hv := -1
+		for n in range(rooms.size()):
+			var m := _vent_mark(n)
+			if m.size.x > 0 and m.grow(3).has_point(e.position):
+				hv = n
 		var h := _room_at(e.position)
-		if h != hover_room:
+		if h != hover_room or hv != hover_vent:
 			hover_room = h
+			hover_vent = hv
 			queue_redraw()
 		return
 
@@ -654,6 +758,15 @@ func _gui_input(e: InputEvent) -> void:
 
 	if mb.button_index != MOUSE_BUTTON_LEFT:
 		return
+
+	# THE HATCH BEFORE ANYTHING ELSE, because it sits on the room's edge and
+	# a click that lands on both should do the rarer, more deliberate thing.
+	for n in range(rooms.size()):
+		var m := _vent_mark(n)
+		if m.size.x > 0 and m.grow(3).has_point(mb.position):
+			var open := str((rooms[n] as Dictionary).get("vent", "shut")) == "open"
+			act("vent %d %s" % [n, "shut" if open else "open"])
+			return
 
 	# A crew member first: clicking a person picks them up, clicking them
 	# again puts them down. Hit-tested against where they were DRAWN, which is

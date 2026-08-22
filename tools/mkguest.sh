@@ -36,7 +36,7 @@ TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
   echo
 } > "$TMP/h"
 
-for p in init rc svcinit login sh ls cat ps ns pkg stat chmod mount umount chroot links cp mv rm touch grep head uname whoami df man zbl-install zbl-mkconfig mkinitrd getty fsck mountall sed ed wc echo blkid svc kill syslogd netd udevd crond ntpd httpd nft auditd sshd postfix ldd dmesg rcon find netstat ping reboot open nomde fortune cowsay sl du tail mkdir rev seq rot13 ip arp traceroute tcpdump ss voice rb py; do
+for p in init rc svcinit login sh ls cat ps ns pkg stat chmod mount umount chroot links cp mv rm touch grep head uname whoami df man zbl-install zbl-mkconfig mkinitrd getty fsck mountall sed ed wc echo blkid svc kill syslogd netd udevd crond ntpd httpd nft auditd sshd postfix ldd dmesg rcon find netstat ping reboot open nomde fortune cowsay sl du tail mkdir rev seq test rot13 ip arp traceroute tcpdump ss voice rb py; do
     # -Ttext keeps every program at a fixed load address: same layout every
     # run, on every host, which is one more thing determinism does not have
     # to be careful about.

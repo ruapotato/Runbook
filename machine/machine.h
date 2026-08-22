@@ -21,7 +21,13 @@
 /* RUNBOOK: 56 -> 64. Adding /bin/rb to nomsh put it exactly one over, and
  * the installer said so loudly and refused to boot -- which is the check
  * doing its job, and the reason this number can be moved at all. */
-#define PKGFILE_MAX    64
+/* RUNBOOK: 64 -> 80. The shell package carries /bin/rb, /bin/py, /bin/test,
+ * /bin/[ and seven example scripts on top of what NOMINAL shipped, and 64 was
+ * exactly one file short. The array truncates silently; what caught it was
+ * image.c's own consistency check, which compares the declared count against
+ * what actually fits and names the entry that went missing. That check is
+ * worth more than the constant. */
+#define PKGFILE_MAX    80
 #define UNIT_MAX       32
 #define CONSOLE_MAX    120
 #define PROC_MAX        32

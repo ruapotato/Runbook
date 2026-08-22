@@ -96,6 +96,14 @@ static void expand(const char *in, char *out, u64 cap)
 }
 
 static int run_line(char *cmd);
+/* A BLOCK'S BODY IS A LIST, NOT A COMMAND.
+ *
+ * The body was handed to run_line, which parses exactly one command --
+ * redirection included -- so a body of `cat x > a; echo y > b` took everything
+ * after the first `>` as one enormous filename and reported it, verbatim, as
+ * unwritable. Bodies and conditions go through the `;` splitter like any other
+ * line, which is also what lets a block nest inside a body. */
+static int run_list(char *s2);
 
 /* Run a ;-separated list of commands. Stops at the first failure, which is
  * what `set -e` gives you and what a boot script needs. */
@@ -106,6 +114,113 @@ static int is_for_impl(const char *s2)
 }
 
 static int is_for(const char *s2) { return is_for_impl(s2); }
+
+/* A KEYWORD AT THE FRONT OF A LINE.
+ *
+ * `for` had a hand-rolled version of this; `if` and `while` need the same
+ * test, and three copies of a four-character comparison is how one of them
+ * ends up subtly different. */
+static int is_word(const char *s2, const char *kw)
+{
+    while (*s2 == ' ') s2++;
+    u64 i = 0;
+    for (; kw[i]; i++) if (s2[i] != kw[i]) return 0;
+    return s2[i] == ' ' || s2[i] == '\t';
+}
+
+/* A BLOCK KEYWORD IS NOT EXPANDED BEFORE IT IS PARSED, for the same reason
+ * `for` is not: $i inside the body must be substituted once per iteration,
+ * not once before the loop starts. */
+static int is_block(const char *s2)
+{
+    return is_for_impl(s2) || is_word(s2, "if") || is_word(s2, "while");
+}
+
+/* Find a bare keyword at a command boundary -- start of string, or after a
+ * space or a `;`. Returns a pointer to it, or 0.
+ *
+ * "a bare keyword" matters: without the boundary test, `echo done` inside a
+ * loop body ends the loop, and `if [ $x = fifty ]` finds `fi` in the middle
+ * of a word. Both of those are the sort of bug that only shows up in
+ * somebody else's script. */
+/* IS THIS THE FIRST WORD OF A COMMAND? Only there does a keyword count.
+ *
+ * "after a space" was the first rule and it is wrong in a way that shows up
+ * immediately: `echo done > /tmp/x` inside a loop body ended the loop,
+ * because `done` had a space in front of it. A keyword is a keyword at the
+ * start of a command and a plain word anywhere else, which means scanning
+ * back over spaces and asking whether what is behind them is the start of the
+ * line or a `;`. */
+static int at_cmd_start(const char *base, const char *q)
+{
+    if (q == base) return 1;
+    const char *b = q - 1;
+    while (b >= base && (*b == ' ' || *b == '\t')) b--;
+    if (b < base) return 1;
+    return *b == ';';
+}
+
+/* Is `kw` the word sitting at `q`? Length-checked, so `do` does not match
+ * the front of `done`. */
+static int kw_here(const char *q, const char *kw)
+{
+    u64 i = 0;
+    for (; kw[i]; i++) if (q[i] != kw[i]) return 0;
+    char after = q[i];
+    return after == ' ' || after == ';' || after == 0 || after == '\t';
+}
+
+/* THE MATCHING CLOSE, not the first one.
+ *
+ * `find_kw(p, "fi")` returns the first `fi` in the string, which for
+ *
+ *     if A; then
+ *         if B; then X; fi
+ *     fi
+ *
+ * is the INNER one -- so the outer `if` ends in the middle of itself, the
+ * trailing `fi` becomes a command, and the body that was supposed to run
+ * never does. It failed silently: the script ran, nothing errored, and the
+ * gun was never fired.
+ *
+ * Depth is counted from just after the opening keyword: `do` and `then` open,
+ * `done` and `fi` close, and the close that brings the count to zero is ours.
+ * Returns 0 when the block is unterminated. `want` may also be "else", which
+ * is only meaningful at depth zero -- an `else` belonging to a nested `if` is
+ * not ours.
+ */
+static char *find_close(char *from, const char *want)
+{
+    int depth = 0;
+    for (char *q = from; *q; q++) {
+        if (!at_cmd_start(from, q)) continue;
+        if (kw_here(q, "done") || kw_here(q, "fi")) {
+            if (depth == 0) {
+                if (kw_here(q, want)) return q;
+                return 0;              /* a close we were not looking for */
+            }
+            depth--;
+            continue;
+        }
+        if (kw_here(q, "do") || kw_here(q, "then")) { depth++; continue; }
+        if (depth == 0 && kw_here(q, want)) return q;   /* `else` */
+    }
+    return 0;
+}
+
+static char *find_kw(char *s2, const char *kw)
+{
+    u64 n = g_strlen(kw);
+    for (char *q = s2; *q; q++) {
+        if (!at_cmd_start(s2, q)) continue;
+        u64 i = 0;
+        while (kw[i] && q[i] == kw[i]) i++;
+        if (kw[i]) continue;
+        char after = q[n];
+        if (after == ' ' || after == ';' || after == 0 || after == '\t') return q;
+    }
+    return 0;
+}
 
 static const char *PATHDIRS[] = { "/bin", "/usr/bin", "/sbin", "/usr/sbin", 0 };
 
@@ -259,10 +374,20 @@ static int run_andor(char *s2)
 static int run_list(char *s2)
 {
     int rc = 0;
-    /* A `for` owns the whole line, semicolons and all -- splitting first
-     * would tear `for i in a b; do x; done` into three broken fragments. */
-    if (is_for(s2)) return run_line(s2);
     while (*s2) {
+        /* A BLOCK OWNS THE REST OF THE LINE, semicolons and all.
+         *
+         * This used to be tested once, on the whole string, which handles
+         * `for i in a b; do x; done` and nothing else. A block that starts
+         * PART WAY along a list -- which is every block inside another
+         * block's body, since a body arrives here as `a; b; if X; then Y; fi`
+         * -- was torn into `if X`, `then`, `Y` and `fi`, and the shell
+         * dutifully reported that `then` is not a command.
+         *
+         * Tested at every command boundary now, so the split stops where a
+         * block begins and run_line takes the remainder. */
+        if (is_block(s2)) return run_line(s2);
+
         char *semi = s2, q = 0;
         for (; *semi; semi++) {
             if (q)                       { if (*semi == q) q = 0; continue; }
@@ -277,6 +402,7 @@ static int run_list(char *s2)
         if (*one) rc = run_andor(one);
         *semi = save;
         s2 = save ? semi + 1 : semi;
+        while (*s2 == ' ' || *s2 == '\t') s2++;
     }
     return rc;
 }
@@ -405,6 +531,86 @@ static void set_status(int rc)
  * and what a caller checking $? expects.
  */
 #define SCRIPT_MAX 32768
+/* HOW MANY BLOCKS THIS LINE OPENS, minus how many it closes.
+ *
+ * `do` and `then` open; `done` and `fi` close. Counting rather than searching
+ * is what makes nesting work: an `if` inside a `while` raises the depth to two
+ * and its `fi` brings it back to one, so the `while` is still open and the
+ * script keeps reading until `done`. */
+/* Trim spaces and leading separators off a fragment carved out of a block.
+ * `do` may be followed by `;`, and the body that starts after it must not
+ * begin with one. */
+/* BLOCK FRAMES, BECAUSE BLOCKS NEST.
+ *
+ * The first version kept the condition, the body and the trailing text in
+ * `static` buffers, which is fine until a block contains a block: the inner
+ * `if` overwrote the outer one's saved tail, and
+ *
+ *     if A; then if B; then echo INNER; fi; echo OUTER; fi
+ *
+ * printed OUTER twice -- once from the inner frame and once from the outer
+ * frame reading the inner frame's leftovers. Nothing errored. It just quietly
+ * did a thing twice.
+ *
+ * They cannot be locals either: GARG_MAX is sixteen kilobytes and three of
+ * them per stack frame, recursing, is more stack than this machine gives a
+ * process. So: a small pool, indexed by nesting depth, with a real message
+ * when it runs out rather than a corrupted frame.
+ */
+#define BLK_DEPTH 8
+#define BLK_TEXT  4096
+typedef struct { char cond[BLK_TEXT], body[BLK_TEXT], tail[BLK_TEXT]; } BlkFrame;
+static BlkFrame blkf[BLK_DEPTH];
+static int blk_level = 0;
+
+static BlkFrame *blk_push(void)
+{
+    if (blk_level >= BLK_DEPTH) {
+        g_putln("sh: blocks nested more than 8 deep -- split it into two scripts");
+        return 0;
+    }
+    return &blkf[blk_level++];
+}
+static void blk_pop(void) { if (blk_level > 0) blk_level--; }
+
+/* Copy a fragment into a frame field, and SAY SO if it does not fit rather
+ * than running a truncated command. */
+static int blk_fit(char *dst, const char *src)
+{
+    if (g_strlen(src) >= BLK_TEXT) {
+        g_putln("sh: that block is longer than 4096 characters -- put it in a function");
+        return 0;
+    }
+    g_copy(dst, src, BLK_TEXT);
+    return 1;
+}
+
+static char *g_trim_sep(char *s2)
+{
+    char *t = g_trim(s2);
+    while (*t == ';' || *t == ' ' || *t == '\t') t++;
+    u64 l = g_strlen(t);
+    while (l && (t[l-1] == ' ' || t[l-1] == ';' || t[l-1] == '\t')) t[--l] = 0;
+    return t;
+}
+
+static int block_opens(const char *l)
+{
+    int d = 0;
+    for (const char *q = l; *q; q++) {
+        if (!at_cmd_start(l, q)) continue;
+        if (q[0] == 'd' && q[1] == 'o' && q[2] == 'n' && q[3] == 'e' &&
+            (q[4] == ' ' || q[4] == ';' || q[4] == 0)) { d--; q += 3; continue; }
+        if (q[0] == 'd' && q[1] == 'o' &&
+            (q[2] == ' ' || q[2] == ';' || q[2] == 0)) { d++; q += 1; continue; }
+        if (q[0] == 't' && q[1] == 'h' && q[2] == 'e' && q[3] == 'n' &&
+            (q[4] == ' ' || q[4] == ';' || q[4] == 0)) { d++; q += 3; continue; }
+        if (q[0] == 'f' && q[1] == 'i' &&
+            (q[2] == ' ' || q[2] == ';' || q[2] == 0)) { d--; q += 1; continue; }
+    }
+    return d;
+}
+
 static char script[SCRIPT_MAX];
 
 static int run_script(const char *path)
@@ -417,11 +623,56 @@ static int run_script(const char *path)
     }
     int rc = 0;
     u64 i = 0;
+    static char joined[SCRIPT_MAX];
     while (i < (u64)n) {
         u64 e = i;
         while (e < (u64)n && script[e] != '\n') e++;
         script[e] = 0;
         char *l = g_trim(script + i);
+
+        /* A BLOCK SPANS LINES, because that is how anybody writes one.
+         *
+         *     while true; do
+         *         ...
+         *     done
+         *
+         * Read a line at a time, `while true; do` has no `done` and the shell
+         * said so -- correctly, and uselessly, since the `done` was two lines
+         * further on. So an unfinished block keeps reading, joining lines with
+         * `;` until its closing keyword arrives.
+         *
+         * Counted rather than searched for, so a nested loop closes the inner
+         * one first and an `if` inside a `while` does not end the `while`. */
+        if (*l && *l != '#' && block_opens(l) > 0) {
+            g_copy(joined, l, sizeof joined);
+            int depth = block_opens(l);
+            while (depth > 0 && e + 1 < (u64)n) {
+                i = e + 1;
+                e = i;
+                while (e < (u64)n && script[e] != '\n') e++;
+                script[e] = 0;
+                char *more = g_trim(script + i);
+                if (!*more || *more == '#') continue;
+                depth += block_opens(more);
+                /* NO STACKED SEPARATORS. A line that already ends in `do`,
+                 * `then` or `;` does not want another one after it --
+                 * "do; echo x" leaves an empty command between them, and an
+                 * empty command is reported as `;: command not found`. */
+                u64 jl = g_strlen(joined);
+                while (jl && (joined[jl-1] == ' ' || joined[jl-1] == '\t')) joined[--jl] = 0;
+                if (jl && joined[jl-1] != ';') g_cat(joined, ";", sizeof joined);
+                g_cat(joined, " ", sizeof joined);
+                g_cat(joined, more, sizeof joined);
+            }
+            if (depth > 0) {
+                g_puts("sh: ");
+                g_puts(path);
+                g_putln(": a block is never closed -- missing `done` or `fi`?");
+                return 1;
+            }
+            l = joined;
+        }
+
         if (*l && *l != '#') {
             rc = run_list(l);
             /* $? AFTER EVERY LINE, not just when the shell exits.
@@ -468,6 +719,26 @@ void _start(void)
      * the person asking is on the next one. */
     set_status(rc);
     g_exit(rc);
+}
+
+/* CLOSING A REDIRECT CAN FAIL, and it has to say so.
+ *
+ * On an ordinary file the write happens on the way through and close is a
+ * formality. On a DEVICE the whole write is delivered at close -- which is
+ * how `echo 3 > /dev/ship/rooms/shields/power` reaches the ship as one value
+ * rather than a byte at a time -- so close is where the ship gets to refuse
+ * it. `echo 9 > .../power` said nothing at all and left the shields where
+ * they were, which teaches a player that writing to these files does not
+ * work rather than that nine is more bars than a shield room has.
+ *
+ * The reason lives on the host side of the syscall, so what comes back here
+ * is a bare failure; the sentence itself is in `rb log`, which is also what
+ * the bridge console shows. Saying WHERE the reason is beats inventing one. */
+static void close_redirect(int fd)
+{
+    if (fd < 0) return;
+    if (g_close(fd) < 0)
+        g_putln("sh: the ship refused that value -- `rb log` says why");
 }
 
 /* Output redirection. `>` truncates, `>>` appends. Implemented by running the
@@ -597,7 +868,21 @@ static int run_line(char *cmd0)
     char subst[GARG_MAX], expanded[GARG_MAX];
 
     g_copy(subst, cmd0, sizeof subst);
-    if (g_contains(subst, "$(") || g_contains(subst, "`")) {
+    /* A CONDITION IS SUBSTITUTED EVERY TIME IT IS ASKED, not once.
+     *
+     *     while [ $(cat /dev/ship/ready) = yes ]; do ... done
+     *
+     * ran `cat` a single time, before the loop started, and then compared the
+     * same stale word forever. The loop was correct and the answer was frozen,
+     * which is the worst way for this to fail: it runs, it never errors, and
+     * it never fires the gun.
+     *
+     * So `if` and `while` keep their raw text and each turn re-enters
+     * run_line, which substitutes afresh. `for` is the opposite -- its word
+     * list has to be expanded once, up front, or `for i in $(seq 1 3)` has
+     * nothing to iterate -- so it still goes through here. */
+    int lazy = is_word(cmd0, "if") || is_word(cmd0, "while");
+    if (!lazy && (g_contains(subst, "$(") || g_contains(subst, "`"))) {
         if (substitute(subst, sizeof subst)) return 1;
         cmd0 = subst;
     }
@@ -606,7 +891,7 @@ static int run_line(char *cmd0)
      * $i while the loop variable is still unset, so the body would be built
      * with empty values and the loop would run the wrong command every time.
      * (That bug mounted / over everything.) */
-    if (!is_for(cmd0)) {
+    if (!is_block(cmd0)) {
         expand(cmd0, expanded, sizeof expanded);
     } else {
         g_copy(expanded, cmd0, sizeof expanded);
@@ -615,10 +900,111 @@ static int run_line(char *cmd0)
     if (!*cmd || *cmd == '#') return 0;
 
     /* After $ substitution and before anything is run. */
-    if (!is_for(cmd) && has_glob(cmd)) {
+    if (!is_block(cmd) && has_glob(cmd)) {
         glob_expand(cmd, globbuf, sizeof globbuf);
         g_copy(expanded, globbuf, sizeof expanded);
         cmd = g_trim(expanded);
+    }
+
+    /* if COND; then BODY; [else BODY;] fi
+     *
+     * The condition is a command and its exit status is the answer, which is
+     * how every shell has ever done it and why /bin/test exists. Zero is
+     * true, because that is what a program returns when nothing went wrong.
+     *
+     * WHY THE SHELL NEEDED THIS AT ALL: the ship became a directory of files,
+     * and the whole promise of that is that the shell already on the disk is
+     * enough to play the game. A shell with no `if` cannot look before it
+     * acts, so every script it can write is a macro. `for` alone was fine for
+     * a machine you administer and useless for a fight you are in. */
+    if (is_word(cmd, "if")) {
+        char *p = cmd + 2;
+        char *thenp = find_kw(p, "then");
+        if (!thenp) { g_putln("sh: if: expected `then`"); return 1; }
+        char *fip = find_close(thenp + 4, "fi");
+        if (!fip) { g_putln("sh: if: expected `fi`"); return 1; }
+        char *elsep = find_close(thenp + 4, "else");
+        if (elsep && elsep > fip) elsep = 0;
+
+        /* WHAT COMES AFTER `fi` IS STILL A COMMAND.
+         *
+         *     if A; then B; fi; echo done
+         *
+         * printed nothing after the block, because the whole line was treated
+         * as the `if`. A block is ONE command in a `;` list, and the list
+         * carries on after it. */
+        BlkFrame *fr = blk_push();
+        if (!fr) return 1;
+        if (!blk_fit(fr->tail, g_trim_sep(fip + 2))) { blk_pop(); return 1; }
+        *fip = 0;
+        char *body = thenp + 4;
+        char *other = 0;
+        if (elsep) { *elsep = 0; other = elsep + 4; }
+        *thenp = 0;
+
+        if (!blk_fit(fr->cond, g_trim_sep(p))) { blk_pop(); return 1; }
+        int ok = run_list(fr->cond) == 0;
+        char *chosen = ok ? body : other;
+        int rc_if = 0;
+        if (chosen && blk_fit(fr->body, g_trim_sep(chosen)) && fr->body[0])
+            rc_if = run_list(fr->body);
+        if (fr->tail[0]) {
+            /* The tail is run OUTSIDE this frame -- it is the next command in
+             * the enclosing list, not part of the block. */
+            char *t = fr->tail;
+            blk_pop();
+            return run_list(t);
+        }
+        blk_pop();
+        return rc_if;
+    }
+
+    /* while COND; do BODY; done
+     *
+     * Bounded, and it says so when it stops. An unbounded loop in a script
+     * that is scheduled out of the ship's computer would simply never give
+     * the slice back, and the fight would stop while somebody's typo ran
+     * forever -- which is exactly the hang this project already fixed once,
+     * from the other direction. A hundred thousand iterations is far past any
+     * real loop and far short of forever. */
+    if (is_word(cmd, "while")) {
+        char *p = cmd + 5;
+        char *dop = find_kw(p, "do");
+        if (!dop) { g_putln("sh: while: expected `do`"); return 1; }
+        char *donep = find_close(dop + 2, "done");
+        if (!donep) { g_putln("sh: while: expected `done`"); return 1; }
+        BlkFrame *wf = blk_push();
+        if (!wf) return 1;
+        if (!blk_fit(wf->tail, g_trim_sep(donep + 4))) { blk_pop(); return 1; }
+        *donep = 0;
+        char *body = dop + 2;
+        *dop = 0;
+
+        if (!blk_fit(wf->cond, g_trim_sep(p)) || !blk_fit(wf->body, g_trim_sep(body))) {
+            blk_pop();
+            return 1;
+        }
+        int rc2 = 0;
+        int done_early = 0;
+        for (long i = 0; i < 100000L; i++) {
+            /* run_line writes into what it is given, so each turn gets a
+             * fresh copy of the stored text. */
+            char c2[BLK_TEXT], b2[BLK_TEXT];
+            g_copy(c2, wf->cond, sizeof c2);
+            if (run_list(c2) != 0) { done_early = 1; break; }
+            if (!wf->body[0]) continue;
+            g_copy(b2, wf->body, sizeof b2);
+            rc2 = run_list(b2);
+        }
+        if (!done_early)
+            g_putln("sh: while: stopped after 100000 turns -- is the condition ever false?");
+        if (wf->tail[0]) {
+            char *t = wf->tail;
+            blk_pop();
+            return run_list(t);
+        }
+        blk_pop();
+        return done_early ? rc2 : 1;
     }
 
     /* for NAME in A B C; do BODY; done
@@ -747,7 +1133,7 @@ static int run_line(char *cmd0)
     for (char *q = cmd; *q; q++) {
         if (*q != '|') continue;
         int rc = run_pipeline(cmd, redirect_fd >= 0 ? redirect_fd : OUT_CONSOLE);
-        if (redirect_fd >= 0) { g_close(redirect_fd); redirect_fd = -1; }
+        if (redirect_fd >= 0) { close_redirect(redirect_fd); redirect_fd = -1; }
         return rc;   /* run_pipeline reports a failed write through wr() */
     }
 
@@ -780,7 +1166,7 @@ static int run_line(char *cmd0)
         if (redirect_fd >= 0) {
             g_cat(cwd, "\n", sizeof cwd);
             int bad = wr(redirect_fd, cwd, g_strlen(cwd));
-            g_close(redirect_fd);
+            close_redirect(redirect_fd);
             redirect_fd = -1;
             return bad;
         }
@@ -890,7 +1276,7 @@ static int run_line(char *cmd0)
 
         if (redirect_fd >= 0) {
             int bad = wr(redirect_fd, outb, o);
-            g_close(redirect_fd);
+            close_redirect(redirect_fd);
             redirect_fd = -1;
             return bad;
         }
@@ -990,7 +1376,11 @@ static int run_line(char *cmd0)
         }
         int rc = (int)g_pipe(prog, rest);
         int bad = pipe_to_fd(redirect_fd);
-        g_close(redirect_fd);
+        /* THE PATH `echo 3 > /dev/ship/rooms/shields/power` ACTUALLY TAKES.
+         * echo is a program, not a builtin, so a redirect around it lands
+         * here -- and this is the close that delivers the value to the ship
+         * and hears whether it was accepted. */
+        close_redirect(redirect_fd);
         redirect_fd = -1;
         return bad ? 1 : (rc == 0 ? 0 : 1);
     }

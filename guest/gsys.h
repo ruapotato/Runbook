@@ -35,7 +35,12 @@ static inline void g_exit(int code) { sysc(SYS_exit, code, 0, 0); for (;;) { } }
 
 static inline int  g_open(const char *p, int flags) { return (int)sysc(SYS_open, (i64)p, flags, 0); }
 static inline i64  g_read(int fd, char *b, u64 n)   { return sysc(SYS_read, fd, (i64)b, (i64)n); }
-static inline void g_close(int fd)                  { sysc(SYS_close, fd, 0, 0); }
+/* CLOSE CAN FAIL, so it returns. It used to be void, which was true while
+ * every file was ordinary bytes: the write had already happened and close was
+ * bookkeeping. A device takes its whole write at close, so close is exactly
+ * where the ship refuses a value, and throwing that away made every refusal
+ * silent. */
+static inline int  g_close(int fd)                  { return (int)sysc(SYS_close, fd, 0, 0); }
 static inline i64  g_readdir(const char *dir, int i, char *buf)
                                                     { return sysc(SYS_readdir, (i64)dir, i, (i64)buf); }
 static inline int  g_stat(const char *p, NomStat *st) { return (int)sysc(SYS_stat, (i64)p, (i64)st, 0); }

@@ -38,6 +38,7 @@ const POWER  := Color("#e0b642")
 const SHIELD := Color("#4a8fd0")
 const BAD    := Color("#c0453b")
 const HULL   := Color("#4fa96b")
+const FIRE   := Color("#e0662a")
 
 func setup(a: RunbookApi, on_echo: Callable) -> void:
 	api = a
@@ -76,7 +77,13 @@ func act(line: String) -> void:
 func _hull_rect() -> Rect2:
 	var top := _head_h() + 22.0
 	var bottom := size.y - 92.0
-	return Rect2(30, top, size.x - 60, maxf(60.0, bottom - top))
+	# CAPPED, AND CENTRED IN WHAT IS LEFT. In a tall narrow window the rooms
+	# stretched to the full height and the raider stopped reading as a ship at
+	# all -- four columns of text with a red outline round them. A ship has
+	# proportions; the space above and below it is just space.
+	var avail: float = maxf(60.0, bottom - top)
+	var h: float = minf(avail, maxf(120.0, size.x * 0.34))
+	return Rect2(30, top + (avail - h) / 2.0, size.x - 60, h)
 
 func _room_rect(n: int) -> Rect2:
 	var h := _hull_rect()
@@ -159,6 +166,15 @@ func _draw_head() -> void:
 	at = _hfield(84.0)
 	_text(at, "their gun", DIM, 10)
 	_bar(Rect2(at.x, at.y + 4, 80, 12), _f(enemy, "charge") / 100.0, BAD)
+
+	# THE COUNTDOWN, not a charge percentage. Same reason as the bridge: a
+	# number you can act on beats a number you have to interpret.
+	var fin := _f(enemy, "fires_in") / 10.0
+	at = _hfield(112.0)
+	if fin < 0.0:
+		_text(at + Vector2(0, 12), "GUN OUT", HULL, 12)
+	else:
+		_text(at + Vector2(0, 12), "fires in %.1fs" % fin, FIRE if fin < 3.0 else DIM, 12)
 
 	at = _hfield(92.0)
 	_text(at + Vector2(0, 12), "evade %d%%" % _i(enemy, "evade"), DIM, 11)

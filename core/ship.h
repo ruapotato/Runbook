@@ -87,7 +87,15 @@ typedef struct {
     int     bars;        /* power currently routed here                     */
     int     cap;         /* the most it can take, undamaged                 */
     int     damage;      /* bars knocked out; cap - damage is what works    */
-    bool    manned;      /* somebody is standing at it -- computed per tick */
+    /* HOW MANY PEOPLE ARE STANDING AT IT, not whether anybody is.
+     *
+     * It was a bool, which meant a second person in the weapon room did
+     * nothing at all -- and "put everybody on the guns" is one of the first
+     * plans anybody forms looking at this screen. A plan the game silently
+     * ignores is worse than one it refuses.
+     *
+     * Counted per tick, capped at MANNED_CAP, and every system reads it. */
+    int     crew;
 } System;
 
 /* ------------------------------------------------------------------ rooms */
@@ -98,6 +106,16 @@ typedef struct {
     double  fire;        /* 0..1, spreads, eats air, damages the system     */
     bool    breach;      /* a hole: air leaves faster than oxygen replaces  */
     bool    door_open;
+    /* THE AIRLOCK. A hole you open on purpose.
+     *
+     * Fire needs air. Open the room to space and the fire dies on its own,
+     * costing you nothing but the air -- which the scrubbers put back once
+     * you shut it again. It is the answer to a fire in a room you cannot
+     * reach, and it is free except for one thing: anybody still in there
+     * suffocates, and they will not walk out on their own.
+     *
+     * That is the trade, and it is the best kind: entirely your fault. */
+    bool    vent_open;
     /* WHICH ROOMS THIS ONE OPENS ONTO.
      *
      * It used to be (i +/- 1) % nroom -- a ring, not a ship. Fire spread from
@@ -264,6 +282,9 @@ int    ship_path_len(const Ship *s, int from, int to);
 int    ship_crew_room(const Ship *s, const char *who);
 bool   ship_fire(Ship *s, const char *target, char *err, size_t errsz);
 bool   ship_door(Ship *s, int room, bool open, char *err, size_t errsz);
+/* Open a room to space. Fire dies, air goes, and anybody in there starts
+ * suffocating -- they do not leave on their own. */
+bool   ship_vent(Ship *s, int room, bool open, char *err, size_t errsz);
 bool   ship_pause(Ship *s, bool paused);
 
 /* ------------------------------------------------------------------ state */
@@ -274,6 +295,13 @@ int    ship_power_total(const Ship *s);
  * with an answer and the answer is their engine room. */
 double ship_evade(const Ship *s);
 double ship_enemy_evade(const Ship *s);
+/* SECONDS, NOT PERCENTAGES. "their gun is at 68%" is a number; "they fire in
+ * 4s" is a decision. FTL's whole readability comes from putting time on the
+ * screen, and a percentage of an unknown rate is not time. */
+double ship_enemy_fires_in(const Ship *s);
+/* Seconds until the next shield layer comes back, or 0 when they are full. */
+double ship_shield_in(const Ship *s);
+int    ship_shields_max(const Ship *s);
 System *ship_system(Ship *s, SysKind k);
 int    ship_room_of(const Ship *s, SysKind k);
 /* How much of the machine's instruction budget the computer is paying for.

@@ -441,7 +441,26 @@ static int64_t sys_open(Proc *p, Cpu *c, uint64_t pathp, int64_t flags)
     f->writable = (flags & (O_WRONLY | O_RDWR)) != 0;
     f->fs = fs;
     snprintf(f->path, sizeof f->path, "%s", path);
-    if (!(flags & O_TRUNC))
+    /* RUNBOOK: A DEVICE IS ITS CALLBACK, not its stored bytes.
+     *
+     * vfs_mkdev and the DevRead/DevWrite hooks were already here -- nom.h
+     * even documents the Plan 9 shape they are for -- but nothing in the
+     * guest kernel ever called them. sys_open copied n->data, which for a
+     * device is permanently empty, so `cat /dev/ship/hull` opened
+     * successfully and printed nothing at all. Devices existed for host code
+     * and were invisible from the machine itself.
+     *
+     * Reading one snapshots it here, at open, which is what a synthetic file
+     * means: the value is whatever it was when you opened it, and reading it
+     * again means opening it again. That is how /proc behaves and it is what
+     * a shell loop does anyway. */
+    if (n->kind == VN_DEV && !want_write) {
+        if (vfs_read(fs, path, &f->data) != IO_OK) {
+            buf_free(&f->data);
+            memset(f, 0, sizeof *f);
+            return -1;
+        }
+    } else if (!(flags & O_TRUNC))
         buf_put(&f->data, n->data.p, n->data.len);
     if (flags & O_APPEND) f->pos = f->data.len;
     return fd;
@@ -512,10 +531,19 @@ static int64_t sys_close(Proc *p, int64_t fd)
     if (fd < 3 || fd >= FD_MAX || !p->fd[fd].used) return -1;
     Fd *f = &p->fd[fd];
     if (f->writable) {
-        VNode *n = vfs_lookup(f->fs ? f->fs : &p->m->disk, f->path);
+        Vfs *wfs = f->fs ? f->fs : &p->m->disk;
+        VNode *n = vfs_lookup(wfs, f->path);
         if (n && n->kind == VN_FILE) {
             buf_clear(&n->data);
             buf_put(&n->data, f->data.p, f->data.len);
+        } else if (n && n->kind == VN_DEV) {
+            /* RUNBOOK: and a write to a device is delivered on close, so
+             * `echo 3 > /dev/ship/rooms/shields/power` arrives once, whole,
+             * rather than a byte at a time. See the note in sys_open. */
+            int rc = vfs_write(wfs, f->path, f->data.p ? f->data.p : "", f->data.len);
+            buf_free(&f->data);
+            memset(f, 0, sizeof *f);
+            return rc == IO_OK ? 0 : -1;
         }
     }
     buf_free(&f->data);

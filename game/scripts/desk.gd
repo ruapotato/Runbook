@@ -146,7 +146,52 @@ func _ready() -> void:
 	resized.connect(_relayout_desktop)
 	_relayout_desktop()
 	if boot_error == "":
-		_launch("Bridge")
+		open_the_fight()
+
+# THE THREE WINDOWS THAT ARE THE FIGHT.
+#
+# Sensors used to be something you found in a menu, which meant the raider --
+# the thing shooting at you, and the only thing you can end the fight by
+# acting on -- was invisible until you went looking. A game that hides its
+# opponent behind a menu is a game whose first minute teaches nothing.
+#
+# Terminal last, so it takes focus: it is the window whose whole point is that
+# your clicks arrive in it as text, and it can only make that point if it is
+# on screen while you click.
+#
+# A NAMED FUNCTION RATHER THAN THE BODY OF _ready(), because _ready does not
+# run until the first frame -- a desktop built and questioned inside the same
+# call, which is exactly what the gate does, saw no windows at all. The gate
+# calls this; so does _ready. It is safe to call twice, because _launch raises
+# an existing window rather than opening a second one.
+func open_the_fight() -> void:
+	_launch("Bridge")
+	_launch("Sensors")
+	_launch("Terminal")
+	_arrange_for_the_fight()
+
+# A FIRST LAYOUT THAT FITS, rather than a cascade. Three windows dropped at
+# cascade offsets overlap into a pile the player has to sort out before they
+# can play, and they are being shot at while they do it. After this the
+# windows are entirely theirs -- nothing re-arranges them again.
+func _arrange_for_the_fight() -> void:
+	var w := size.x
+	var h := size.y - TOP_H - FOOT_H
+	if w < 900.0 or h < 560.0:
+		return
+	var right: float = clampf(w * 0.36, 300.0, 470.0)
+	var left := w - right - 18.0
+	_place_win("Bridge",  Vector2(6, TOP_H + 4), Vector2(left, h * 0.62))
+	_place_win("Terminal", Vector2(6, TOP_H + 8 + h * 0.62), Vector2(left, h * 0.36 - 12))
+	_place_win("Sensors", Vector2(left + 12, TOP_H + 4), Vector2(right, h - 12))
+
+func _place_win(key: String, at: Vector2, sz: Vector2) -> void:
+	var wnd := _find_window(key)
+	if wnd == null or not is_instance_valid(wnd):
+		return
+	wnd.position = at
+	wnd.size = sz
+	_relayout_win(wnd)
 
 var _clock_cache: Dictionary = {}
 var _clock_age := 99.0

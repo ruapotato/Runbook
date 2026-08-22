@@ -69,6 +69,30 @@
 #define HEAL_RATE         0.16     /* in the medbay, per bar                */
 #define EVADE_PER_BAR     0.09
 
+/* WHAT A SECOND PAIR OF HANDS IS WORTH.
+ *
+ * Every system reads Room.crew, so putting two people on the guns really does
+ * charge them faster, and putting all three in the shield room really does
+ * bring layers back sooner. That is the plan a player forms in the first
+ * thirty seconds of looking at this screen, and until now the game ignored it.
+ *
+ * Capped at three because the fourth person in a room is standing in a
+ * doorway, and because an uncapped bonus would make "stack everybody" the
+ * only strategy rather than one of them. */
+#define MANNED_CAP        3
+#define MANNED_BONUS      0.30     /* per person, on the system's rate       */
+
+/* AN OPEN AIRLOCK EMPTIES A ROOM FAST -- much faster than a breach, which is
+ * damage rather than a decision. Tuned so venting a room takes about four
+ * seconds: long enough to be a commitment, short enough to beat a fire. */
+#define VENT_RATE         0.28
+
+/* FIGHTING A FIRE HURTS. It was 0.05, which over a ten-second fire cost half
+ * a heart and no decisions. At 0.10 somebody who puts out two fires needs the
+ * medbay, and needing the medbay is what makes the medbay a system rather
+ * than a room with a cross painted on it. */
+#define FIRE_HURTS        0.10
+
 /* WALKING, AND WHY IT IS THIS SLOW.
  *
  * A hop is one doorway. Most trips are two hops -- out into the spine and
@@ -132,6 +156,16 @@ void ship_log(Ship *s, const char *fmt, ...)
     snprintf(s->log[s->nlog++], sizeof s->log[0], "%s", line);
 }
 
+/* The multiplier a room's people give whatever is in it. One place, so every
+ * system is worth the same per pair of hands and a player only has to learn
+ * the rule once. */
+static double manned(const System *sy)
+{
+    int n = sy->crew;
+    if (n > MANNED_CAP) n = MANNED_CAP;
+    return 1.0 + MANNED_BONUS * n;
+}
+
 /* ------------------------------------------------------------------ setup */
 void ship_init(Ship *s, uint64_t seed)
 {
@@ -140,7 +174,15 @@ void ship_init(Ship *s, uint64_t seed)
     rng_seed(&s->rng, seed);
     snprintf(s->name, sizeof s->name, "Kestrel");
     s->hull = s->hull_max = HULL_MAX;
-    s->paused = true;              /* you start paused, looking at it */
+    /* YOU START FLYING, NOT LOOKING.
+     *
+     * It used to start paused with "space to start" on the screen, which put
+     * a keystroke between the player and the game and made the first thing
+     * they learned a piece of interface trivia. FTL starts running and so
+     * does this. Pause is still there and still free -- it is the good idea
+     * this game borrowed -- but it is a thing you reach for when you need to
+     * think, not a door you have to open to begin. */
+    s->paused = false;
 
     /* THE ROOMS, AND WHY THIS MANY. Eight is enough for a fire to have
      * somewhere to spread to and for "who is nearest" to be a question. It is
@@ -246,7 +288,8 @@ void ship_init(Ship *s, uint64_t seed)
     }
 
     ship_log(s, "a raider closes. shields up.");
-    ship_log(s, "space to start. click a system to give it power.");
+    ship_log(s, "give a system power by clicking its amber squares.");
+    ship_log(s, "space stops time if you need to think.");
 }
 
 /* ------------------------------------------------------------------ state */
@@ -274,7 +317,49 @@ double ship_evade(const Ship *s)
     int max = en->cap - en->damage;
     if (w > max) w = max;
     if (w < 0) w = 0;
-    return EVADE_PER_BAR * w * (en->manned ? 1.3 : 1.0);
+    {
+        int n = en->crew;
+        if (n > MANNED_CAP) n = MANNED_CAP;
+        return EVADE_PER_BAR * w * (1.0 + MANNED_BONUS * n);
+    }
+}
+
+double ship_enemy_fires_in(const Ship *s)
+{
+    const Enemy *e = &s->enemy;
+    if (!e->alive) return 0.0;
+    double wfrac = 1.0;
+    for (int i = 0; i < e->nroom; i++) {
+        if (e->room[i].kind != SYS_WEAPONS || e->room[i].cap <= 0) continue;
+        int w = e->room[i].cap - e->room[i].damage;
+        wfrac = (double)(w < 0 ? 0 : w) / (double)e->room[i].cap;
+    }
+    double rate = e->charge_rate * wfrac;
+    if (rate <= 0.0) return -1.0;          /* their gun is out */
+    return (1.0 - e->charge) / rate;
+}
+
+int ship_shields_max(const Ship *s)
+{
+    for (int i = 0; i < s->nroom; i++) {
+        if (s->room[i].sys.kind != SYS_SHIELDS) continue;
+        int w = s->room[i].sys.bars;
+        int max = s->room[i].sys.cap - s->room[i].sys.damage;
+        if (w > max) w = max;
+        return w < 0 ? 0 : w;
+    }
+    return 0;
+}
+
+double ship_shield_in(const Ship *s)
+{
+    if (s->shields >= ship_shields_max(s)) return 0.0;
+    const System *sh = NULL;
+    for (int i = 0; i < s->nroom; i++)
+        if (s->room[i].sys.kind == SYS_SHIELDS) sh = &s->room[i].sys;
+    double rate = sh ? manned(sh) : 1.0;
+    if (rate <= 0.0) return 0.0;
+    return s->shield_t / rate;
 }
 
 double ship_enemy_evade(const Ship *s)
@@ -309,6 +394,14 @@ int ship_compute_slices(const Ship *s)
     int working = c->bars;
     if (working > c->cap - c->damage) working = c->cap - c->damage;
     if (working < 0) working = 0;
+    /* SOMEBODY AT THE CONSOLE MAKES IT FASTER, same rule as every other
+     * system. It is also the only bonus in the game that a script can feel:
+     * your own loop gets more slices because somebody sat down. */
+    if (working > 0) {
+        int n = c->crew;
+        if (n > MANNED_CAP) n = MANNED_CAP;
+        working += n;
+    }
     /* SLICES, NOT INSTRUCTIONS.
      *
      * kernel_tick takes a number of scheduling slices and spends a budget of
@@ -604,6 +697,15 @@ bool ship_door(Ship *s, int room, bool open, char *err, size_t errsz)
     return true;
 }
 
+bool ship_vent(Ship *s, int room, bool open, char *err, size_t errsz)
+{
+    if (room < 0 || room >= s->nroom) { snprintf(err, errsz, "no room %d", room); return false; }
+    s->room[room].vent_open = open;
+    if (open) ship_log(s, "the %s is open to space.", s->room[room].name);
+    else      ship_log(s, "the %s is sealed again.", s->room[room].name);
+    return true;
+}
+
 bool ship_pause(Ship *s, bool paused) { s->paused = paused; return true; }
 
 /* ------------------------------------------------------------------- tick */
@@ -611,9 +713,34 @@ bool ship_pause(Ship *s, bool paused) { s->paused = paused; return true; }
  * lie that costs nothing at eight rooms: everything is next to two things. A
  * real layout arrives with the picture, because the picture is the only thing
  * that makes a layout mean anything. */
+/* THE MODEL HAS A STEP SIZE, AND IT IS NOT WHATEVER YOU ASKED FOR.
+ *
+ * Air moves between rooms by a fraction of the difference per second, which
+ * is stable at a fiftieth of a second and nonsense at two. `tick 2` from the
+ * terminal drained a room the vent was not even open on, and it looked
+ * exactly like a bug in venting -- it was the diffusion overshooting and
+ * bouncing, twice per pair of rooms.
+ *
+ * A player typing `tick 5` to skip ahead, or a script that ticks once a
+ * second, must get the same fight the desktop gets at 50Hz. So ship_tick
+ * chops whatever it is given into steps this size and runs them in order.
+ * The alternative is a model whose behaviour depends on who called it, which
+ * is the same class of problem as tuning by argument. */
+#define STEP_MAX 0.05
+
 int ship_tick(Ship *s, double dt)
 {
     if (s->paused || s->over || dt <= 0) return 0;
+    if (dt > STEP_MAX) {
+        int logs = 0;
+        /* A hard cap on the number of steps, so `tick 100000` from a script
+         * is slow rather than a hang. */
+        int steps = (int)(dt / STEP_MAX) + 1;
+        if (steps > 20000) steps = 20000;
+        double h = dt / steps;
+        for (int i = 0; i < steps && !s->over; i++) logs += ship_tick(s, h);
+        return logs;
+    }
     int logs0 = s->nlog;
     s->clock += dt;
 
@@ -657,7 +784,7 @@ int ship_tick(Ship *s, double dt)
         if (r->fire > 0.0) {
             r->fire -= EXTINGUISH * dt;
             if (r->fire < 0) r->fire = 0;
-            c->health -= 0.05 * dt;         /* fighting a fire costs you */
+            c->health -= FIRE_HURTS * dt;   /* and this is what the medbay is for */
         } else if (r->sys.damage > 0) {
             r->repair_acc += REPAIR_RATE * dt;
             while (r->repair_acc >= 1.0 && r->sys.damage > 0) {
@@ -669,7 +796,7 @@ int ship_tick(Ship *s, double dt)
 
         if (r->oxygen < 0.15) c->health -= SUFFOCATE * dt;
         if (r->sys.kind == SYS_MEDBAY && working(&r->sys) > 0)
-            c->health += HEAL_RATE * working(&r->sys) * dt;
+            c->health += HEAL_RATE * working(&r->sys) * manned(&r->sys) * dt;
         if (c->health > 1.0) c->health = 1.0;
         if (c->health <= 0.0) {
             c->alive = false;
@@ -678,10 +805,10 @@ int ship_tick(Ship *s, double dt)
     }
 
     /* ---- manned: computed, never ordered */
-    for (int i = 0; i < s->nroom; i++) s->room[i].sys.manned = false;
+    for (int i = 0; i < s->nroom; i++) s->room[i].sys.crew = 0;
     for (int i = 0; i < s->ncrew; i++)
         if (s->crew[i].alive && s->crew[i].step < 0)
-            s->room[s->crew[i].room].sys.manned = true;
+            s->room[s->crew[i].room].sys.crew++;
 
     /* ---- fire, air, breaches */
     for (int i = 0; i < s->nroom; i++) {
@@ -719,15 +846,19 @@ int ship_tick(Ship *s, double dt)
             }
         }
         if (r->breach) r->oxygen -= BREACH_VENT * dt;
+        /* AN AIRLOCK YOU OPENED. Faster than a breach, because it is a
+         * decision rather than damage -- and the fire in here is going out
+         * whether anybody reaches it or not. */
+        if (r->vent_open) r->oxygen -= VENT_RATE * dt;
         if (r->oxygen < 0) r->oxygen = 0;
     }
 
     /* Air moves between open rooms, and the scrubbers put it back. */
     System *ox = ship_system(s, SYS_OXYGEN);
-    double fill = ox ? OXYGEN_FILL * working(ox) : 0.0;
+    double fill = ox ? OXYGEN_FILL * working(ox) * manned(ox) : 0.0;
     for (int i = 0; i < s->nroom; i++) {
         Room *r = &s->room[i];
-        if (!r->breach && r->fire <= 0.0) {
+        if (!r->breach && !r->vent_open && r->fire <= 0.0) {
             r->oxygen += fill * dt;
             if (r->oxygen > 1.0) r->oxygen = 1.0;
         }
@@ -746,7 +877,7 @@ int ship_tick(Ship *s, double dt)
     int layers = sh ? working(sh) : 0;
     if (s->shields > layers) s->shields = layers;
     if (s->shields < layers) {
-        s->shield_t -= dt * (1.0 + (sh && sh->manned ? 0.4 : 0.0));
+        s->shield_t -= dt * (sh ? manned(sh) : 1.0);
         if (s->shield_t <= 0) { s->shields++; s->shield_t = SHIELD_RECHARGE; }
     } else s->shield_t = SHIELD_RECHARGE;
 
@@ -754,7 +885,7 @@ int ship_tick(Ship *s, double dt)
     System *wp = ship_system(s, SYS_WEAPONS);
     int wbars = wp ? working(wp) : 0;
     if (wbars > 0 && s->weapon_charge < 1.0) {
-        double rate = (double)wbars / WEAPON_SECONDS * (wp->manned ? 1.25 : 1.0);
+        double rate = (double)wbars / WEAPON_SECONDS * manned(wp);
         s->weapon_charge += rate * dt;
         if (s->weapon_charge >= 1.0) {
             s->weapon_charge = 1.0;
@@ -819,7 +950,7 @@ int ship_tick(Ship *s, double dt)
         if (!sh_->incoming) { shot_hits_them(s, sh_->target); continue; }
 
         System *en = ship_system(s, SYS_ENGINES);
-        double evade = en ? EVADE_PER_BAR * working(en) * (en->manned ? 1.3 : 1.0) : 0.0;
+        double evade = en ? EVADE_PER_BAR * working(en) * manned(en) : 0.0;
         if (rng_unit(&s->rng) < evade) { ship_log(s, "it goes wide."); continue; }
         if (s->shields > 0) {
             s->shields--;
@@ -877,10 +1008,11 @@ void ship_render(const Ship *s, Buf *out)
         const Room *r = &s->room[i];
         buf_printf(out, "%s{\"n\":%d,\"name\":\"%s\",\"system\":\"%s\",\"bars\":%d,"
                         "\"cap\":%d,\"damage\":%d,\"oxygen\":%d,\"fire\":%d,"
-                        "\"breach\":%s,\"door\":\"%s\"}",
+                        "\"breach\":%s,\"door\":\"%s\",\"vent\":\"%s\",\"crew\":%d}",
                    i ? "," : "", i, r->name, sys_name(r->sys.kind), r->sys.bars,
                    r->sys.cap, r->sys.damage, (int)(r->oxygen * 100), (int)(r->fire * 100),
-                   r->breach ? "true" : "false", r->door_open ? "open" : "shut");
+                   r->breach ? "true" : "false", r->door_open ? "open" : "shut",
+                   r->vent_open ? "open" : "shut", r->sys.crew);
     }
     buf_puts(out, "],\"crew\":[");
     for (int i = 0; i < s->ncrew; i++) {

@@ -87,6 +87,53 @@ int boxcheck_run(uint64_t seed)
     ck(has(&out, "+OK"), "and change it");
 
     /* ---- DOES THE LANGUAGE WORK, in full. */
+    /* ------------------------------------------------- /dev/ship
+     *
+     * THE SHIP IS A DIRECTORY. This is the check that says so, and it drives
+     * the game entirely through the filesystem: read a value, write a value,
+     * read it back, and confirm the model actually moved. If this passes, the
+     * shell that is already on this disk is a complete scripting language for
+     * the game and nobody has to be taught an API to use it. */
+    sh(b, "cat /dev/ship/hull", &out);
+    ck(has(&out, "16"), "the ship's hull is a file you can cat");
+
+    sh(b, "cat /dev/ship/ready", &out);
+    ck(has(&out, "no"), "and whether the gun is ready is a word, not a percentage");
+
+    sh(b, "echo 3 > /dev/ship/rooms/shields/power", &out);
+    sh(b, "cat /dev/ship/rooms/shields/power", &out);
+    ck(has(&out, "3"), "writing to a room's power file routes power to it");
+
+    /* AND THE MODEL REALLY MOVED, asked through the other door. A device file
+     * that only agrees with itself proves nothing. */
+    sh(b, "rb rooms | grep shields", &out);
+    ck(has(&out, "\"bars\":3"), "and the ship agrees, asked the other way");
+
+    sh(b, "echo open > /dev/ship/rooms/medbay/vent", &out);
+    sh(b, "cat /dev/ship/rooms/medbay/vent", &out);
+    ck(has(&out, "open"), "an airlock is a file too");
+
+    sh(b, "echo medbay > /dev/crew/Vane/room", &out);
+    sh(b, "cat /dev/crew/Vane/doing", &out);
+    ck(has(&out, "walking"), "and sending somebody is a write to /dev/crew");
+
+    /* A REFUSAL HAS TO BE AUDIBLE. Silence here is the failure mode that
+     * teaches a player these files do not work. */
+    sh(b, "echo 9 > /dev/ship/rooms/shields/power", &out);
+    ck(has(&out, "refused"), "a value the ship will not take says so");
+
+    /* THE SHELL CAN PLAY THE GAME, which is the point of all of the above.
+     * `if` and `while` were added for exactly this: a shell with neither can
+     * only write macros, and a macro cannot look before it acts. */
+    sh(b, "if [ a = a ]; then echo YES; else echo NO; fi", &out);
+    ck(has(&out, "YES") && !has(&out, "NO"), "the shell has if/then/else");
+
+    sh(b, "echo 3 > /tmp/n; while [ $(cat /tmp/n) != 0 ]; do echo turn; echo 0 > /tmp/n; done", &out);
+    ck(has(&out, "turn"), "and while, with the condition re-read every turn");
+
+    sh(b, "if [ a = a ]; then if [ b = b ]; then echo IN; fi; echo OUT; fi", &out);
+    ck(has(&out, "IN") && has(&out, "OUT"), "and blocks nest without eating each other");
+
     sh(b, "py /root/examples/selftest.py", &out);
     ck(has(&out, "selftest: OK"), "the language passes its own suite");
     if (!has(&out, "selftest: OK") && out.p) printf("machine:       %s\n", out.p);

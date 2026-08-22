@@ -52,15 +52,9 @@ func _tick() -> void:
 			api.exec("pause")
 			api.exec("send Vane 7")
 
-			desk._launch("Bridge")
-			desk._launch("Sensors")
+			# The layout the desktop gives you at boot, left alone.
 			desk._launch("Map")
-			desk._launch("Terminal")
-
-			_place(desk, "Bridge", Vector2(6, 28), Vector2(800, 470))
-			_place(desk, "Map", Vector2(812, 28), Vector2(462, 240))
-			_place(desk, "Sensors", Vector2(812, 274), Vector2(462, 300))
-			_place(desk, "Terminal", Vector2(200, 506), Vector2(760, 268))
+			_place(desk, "Map", Vector2(700, 470), Vector2(420, 210))
 
 			for key in ["Sensors", "Map"]:
 				var kw: Node = desk._find_window(str(key))

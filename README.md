@@ -48,6 +48,32 @@ runs on reactor bars — the same bars the shields want. With no power in the
 computer, your automation does nothing at all. Automation is a trade, not a
 cheat, and that is the whole game.
 
+## The ship is a directory
+
+Plan 9's idea. Every value is a file, one value per file:
+
+```
+$ cat /dev/ship/ready
+yes
+$ echo 3 > /dev/ship/rooms/shields/power
+$ echo open > /dev/ship/rooms/medbay/vent
+$ echo medbay > /dev/crew/Vane/room
+```
+
+No API and no library. `ls /dev/ship` is the documentation, and because
+nothing needs parsing the shell that is already on the disk is enough:
+
+```sh
+while true; do
+    if [ $(cat /dev/ship/ready) = yes ]; then
+        echo shields > /dev/ship/fire
+    fi
+done
+```
+
+That is `/root/examples/gunner.sh`, and `run` starts it inside the fight the
+same way it starts a Python one.
+
 ## The recorder
 
 There is a record button on the panel. It watches what you do, notices the
@@ -116,8 +142,8 @@ type 'help'; every response ends with a lone '.'
 
 ```
 $ make check
-fight:   only shooting      32% won, 96s average
-fight:   actually playing  100% won, 129s average
+fight:   only shooting      35% won,  96s average
+fight:   actually playing   92% won, 121s average
 fight: PASS   they arrive under their own steam
 fight: PASS   having taken 3.4s to walk it
 fight: PASS   a shut door on the way costs longer (6.0s against 3.4s)
@@ -125,9 +151,9 @@ fight: PASS   you cannot teleport through your own shields
 fight: PASS   and their engines take it, not some other room
 fight: PASS  doing nothing but shooting is not enough
 fight: PASS  putting fires out and moving people wins it
-fight: PASS  the decisions are worth 68 points
+fight: PASS  the decisions are worth 57 points
 machine: 12 checks, 0 failed
-client: client_test: 50 checks, 0 failures
+client: client_test: 51 checks, 0 failures
 games: games_test: 10 games, 0 failures
 determinism: PASS  same seed reproduces byte-identically
 determinism: PASS  a different seed produces a different world
