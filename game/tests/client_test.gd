@@ -155,9 +155,62 @@ func _desktop_checks() -> void:
 	desk._launch("game:gsolitaire")
 	ck(desk._find_window("Solitaire") != null, "the desktop has solitaire on it, like every desktop")
 
+	_menu_checks(desk)
 	_bridge_checks(desk)
 	_terminal_checks(desk)
 	_recorder_checks()
+
+# THE MENU OPENS THE THING YOU CLICKED ON.
+#
+# It did not. Drawing gave a blank separator 8 pixels and everything else 22;
+# hit-testing divided by 22 and assumed a uniform grid. So every item below
+# the separator was drawn 14 pixels above where clicking it landed, and the
+# Applications menu -- which has a separator right before the games -- launched
+# the wrong game every single time.
+#
+# Nothing in the old gate could see it, because every check drove _launch()
+# directly and none of them went through the menu. So: click the rows, at the
+# coordinates the menu says they are at, and assert the right window opened.
+func _menu_checks(desk: Node) -> void:
+	desk.menu_open = 0
+	var items: Array = desk._menu_items(0)
+	var rows: Array = desk._menu_rows()
+	ck(items.size() == rows.size(), "every menu item has a row rectangle")
+
+	# Find a game BELOW the separator -- the ones that were broken.
+	var target := -1
+	for i in range(items.size()):
+		if str((items[i] as Dictionary).get("kind", "")).begins_with("game:"):
+			target = i
+	ck(target > 0, "the Applications menu has games under a separator")
+	if target < 0:
+		return
+
+	var want: Dictionary = items[target]
+	var click := InputEventMouseButton.new()
+	click.button_index = MOUSE_BUTTON_LEFT
+	click.pressed = true
+	# NEAR THE TOP OF THE ROW, NOT ITS CENTRE. The old arithmetic was out by
+	# 14 pixels against a 22-pixel row, which means the exact centre of every
+	# row still rounded back to the right index -- and a gate that clicks
+	# centres would have passed on the broken build. A person clicks wherever
+	# the label is.
+	var trow: Rect2 = rows[target]
+	click.position = Vector2(trow.position.x + 30, trow.position.y + 3)
+	desk._input(click)
+	ck(desk._find_window(str(want["label"])) != null,
+	   "clicking the last game in the menu opens %s, not something else" % want["label"])
+
+	# And the same for an item ABOVE the separator, which always worked and
+	# must keep working.
+	desk.menu_open = 0
+	items = desk._menu_items(0)
+	rows = desk._menu_rows()
+	var frow: Rect2 = rows[0]
+	click.position = Vector2(frow.position.x + 30, frow.position.y + 3)
+	desk._input(click)
+	ck(desk._find_window(str((items[0] as Dictionary)["label"])) != null,
+	   "and the first item still opens the first item")
 
 # THE PATH A PERSON ACTUALLY TAKES.
 #

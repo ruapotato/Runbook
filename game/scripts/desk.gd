@@ -469,7 +469,37 @@ func _menu_rect() -> Rect2:
 		if it.has("sub"):
 			lw += mono.get_string_size(str(it["sub"]), HORIZONTAL_ALIGNMENT_LEFT, -1, 10).x + 24.0
 		w = maxf(w, lw + 50.0)
-	return Rect2((tabs[menu_open] as Rect2).position.x, TOP_H, w, 6 + items.size() * 22.0)
+	var h := 6.0
+	for raw in items:
+		h += _menu_row_h(raw as Dictionary)
+	return Rect2((tabs[menu_open] as Rect2).position.x, TOP_H, w, h)
+
+# ONE PLACE THAT KNOWS HOW TALL A MENU ROW IS.
+#
+# A blank separator is 8 pixels and everything else is 22, and for a while the
+# DRAWING knew that and the CLICK MATH did not -- the click math divided by 22
+# and assumed a uniform grid. So every item below the separator was drawn 14
+# pixels above where clicking it landed, and the Applications menu, which has
+# a separator right before the games, launched the wrong game every time.
+#
+# The bug was not the arithmetic. It was having the arithmetic twice.
+func _menu_row_h(it: Dictionary) -> float:
+	if str(it.get("kind", "")) == "" and str(it.get("label", "")) == "":
+		return 8.0
+	return 22.0
+
+# The rectangle of every row, in order. Drawing and hit-testing both read this
+# and neither one does its own sums.
+func _menu_rows() -> Array:
+	var r := _menu_rect()
+	var out: Array = []
+	var y := r.position.y + 6.0
+	for raw in _menu_items(menu_open):
+		var it: Dictionary = raw
+		var h := _menu_row_h(it)
+		out.append(Rect2(r.position.x, y, r.size.x, h))
+		y += h
+	return out
 
 func _draw_menu() -> void:
 	var r := _menu_rect()
@@ -477,25 +507,28 @@ func _draw_menu() -> void:
 	draw_rect(r, PANEL_HI)
 	draw_rect(r, PANEL_EDGE, false, 1.0)
 	var items := _menu_items(menu_open)
-	var y := r.position.y + 17.0
-	for raw in items:
-		var it: Dictionary = raw
+	var rows := _menu_rows()
+	for i in range(items.size()):
+		var it: Dictionary = items[i]
+		var row: Rect2 = rows[i]
 		var sep := str(it.get("kind", "")) == ""
+		if sep and str(it.get("label", "")) == "":
+			draw_line(Vector2(r.position.x + 6, row.position.y + 4),
+				Vector2(r.position.x + r.size.x - 6, row.position.y + 4), Color("#c4bfb7"), 1.0)
+			continue
+		var base := row.position.y + 15.0
 		if sep:
-			draw_line(Vector2(r.position.x + 6, y - 5), Vector2(r.position.x + r.size.x - 6, y - 5),
-				Color("#c4bfb7"), 1.0)
-			if str(it.get("label", "")) == "":
-				y += 8.0
-				continue
+			draw_line(Vector2(r.position.x + 6, row.position.y + 1),
+				Vector2(r.position.x + r.size.x - 6, row.position.y + 1), Color("#c4bfb7"), 1.0)
 		else:
-			Icons.draw_icon(self, Vector2(r.position.x + 6, y - 12), 15.0, str(it.get("icon", "app")))
-		draw_string(mono, Vector2(r.position.x + 26, y), str(it["label"]),
+			Icons.draw_icon(self, Vector2(r.position.x + 6, row.position.y + 4), 15.0,
+				str(it.get("icon", "app")))
+		draw_string(mono, Vector2(r.position.x + 26, base), str(it["label"]),
 			HORIZONTAL_ALIGNMENT_LEFT, r.size.x - 36, 12,
 			Color("#8a857d") if sep else PANEL_INK)
 		if it.has("sub"):
-			draw_string(mono, Vector2(r.position.x + r.size.x - 8, y), str(it["sub"]),
+			draw_string(mono, Vector2(r.position.x + r.size.x - 8, base), str(it["sub"]),
 				HORIZONTAL_ALIGNMENT_RIGHT, 200, 10, Color("#7b756c"))
-		y += 22.0
 
 # -------------------------------------------------------- the bottom panel
 func _show_desktop_rect() -> Rect2: return Rect2(4, 4, 20, FOOT_H - 8)
@@ -760,10 +793,12 @@ func _input(e: InputEvent) -> void:
 	if menu_open >= 0 and e is InputEventMouseButton and e.pressed and e.button_index == MOUSE_BUTTON_LEFT:
 		var r := _menu_rect()
 		if r.has_point(e.position):
-			var i := int((e.position.y - r.position.y - 3.0) / 22.0)
 			var items := _menu_items(menu_open)
-			if i >= 0 and i < items.size():
-				_activate(str((items[i] as Dictionary)["kind"]))
+			var rows := _menu_rows()
+			for i in range(items.size()):
+				if (rows[i] as Rect2).has_point(e.position):
+					_activate(str((items[i] as Dictionary)["kind"]))
+					break
 			menu_open = -1
 			queue_redraw()
 			accept_event()
