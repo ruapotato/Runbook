@@ -262,8 +262,11 @@ func _bridge_checks(desk: Node) -> void:
 	# --- pick somebody up and put them somewhere ---
 	var who := str((br.crew[0] as Dictionary).get("name", ""))
 	var from := int(str((br.crew[0] as Dictionary).get("room", "0")))
-	var cr: Rect2 = br._room_rect(from)
-	click.position = Vector2(cr.position.x + cr.size.x - 22, cr.position.y + 34)
+	# WHERE THEY ARE DRAWN, asked of the bridge rather than recomputed here.
+	# A test that works out the dot's position independently is a test that
+	# passes while the picture and the click disagree.
+	var at: Vector2 = br._crew_pos(who)
+	click.position = at
 	br._gui_input(click)
 	ck(br.picked == who, "clicking a crew member picks them up")
 

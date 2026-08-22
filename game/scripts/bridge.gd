@@ -110,41 +110,65 @@ func _f(d: Dictionary, k: String, dflt: float = 0.0) -> float:
 func _yes(d: Dictionary, k: String) -> bool:
 	return str(d.get(k, "false")) == "true"
 
-# --------------------------------------------------------------- geometry
-# THE DECK PLAN IS NOT A GRID OF EQUAL BOXES. A ship you can read at a glance
-# has a shape: the reactor aft, the bridge forward, a corridor down the spine.
-# The layout is fixed because the ship is fixed -- one ship, one fight.
-const PLAN := [
-	Rect2(0, 0, 1, 1),   # 0 reactor
-	Rect2(1, 0, 1, 1),   # 1 shields
-	Rect2(0, 1, 1, 1),   # 2 engines
-	Rect2(2, 0, 1, 1),   # 3 weapons
-	Rect2(1, 1, 1, 1),   # 4 oxygen
-	Rect2(2, 1, 1, 1),   # 5 medbay
-	Rect2(3, 0, 1, 1),   # 6 computer
-	Rect2(3, 1, 1, 1),   # 7 corridor
-]
-
-func _deck() -> Rect2:
-	var top := 58.0
-	var bottom := size.y - _console_h()
-	var h := bottom - top - 16.0
-	var w := size.x - 32.0
-	return Rect2(16, top, w, h)
+# ------------------------------------------------------ the deck plan
+# A SHIP IS NOT A SPREADSHEET.
+#
+# The first version of this drew eight equal boxes in a four-by-two grid,
+# which is a table of rooms rather than a picture of a ship, and a playtester
+# said so in one sentence. It matters more than it looks like it does: you are
+# supposed to glance at this and know instantly that the fire is aft, that the
+# breach is two rooms from the person nearest it, and that the corridor is
+# what connects them. Equal boxes in a grid tell you none of that, because
+# every room is the same distance from every other one.
+#
+# So the Kestrel has a shape: engines aft, a nose forward pointing at the
+# raider, and a spine corridor down the middle that everything opens onto.
+# Rooms are different sizes because they are different rooms.
+#
+# Grid units, +x forward. The hull is 9 wide and 4.8 deep.
+const DECK_W := 9.0
+const DECK_H := 4.8
+const PLAN := {
+	0: Rect2(1.4, 0.0, 2.0, 1.9),   # reactor  -- amidships, upper
+	1: Rect2(5.8, 0.0, 1.9, 2.4),   # shields  -- forward, upper
+	2: Rect2(0.0, 1.0, 1.4, 2.8),   # engines  -- aft
+	3: Rect2(5.8, 2.4, 1.9, 2.4),   # weapons  -- forward, lower
+	4: Rect2(3.4, 0.0, 2.4, 1.9),   # oxygen   -- amidships, upper
+	5: Rect2(1.4, 2.9, 2.0, 1.9),   # medbay   -- amidships, lower
+	6: Rect2(3.4, 2.9, 2.4, 1.9),   # computer -- amidships, lower
+	7: Rect2(1.4, 1.9, 4.4, 1.0),   # corridor -- the spine
+}
 
 func _console_h() -> float:
 	return 108.0
 
+# The pixel rectangle the whole ship is drawn in, and the scale that gets it
+# there. Measured rather than assumed, because the window is resizable and a
+# deck plan that overflows its window is worse than no picture at all.
+func _deck() -> Rect2:
+	var top := 58.0
+	var bottom := size.y - _console_h()
+	var avail := Rect2(20, top + 10, size.x - 40, bottom - top - 20)
+	if avail.size.x < 20 or avail.size.y < 20:
+		return Rect2(20, top, 10, 10)
+	var s: float = minf(avail.size.x / DECK_W, avail.size.y / DECK_H)
+	var w := DECK_W * s
+	var h := DECK_H * s
+	return Rect2(avail.position.x + (avail.size.x - w) / 2.0,
+				 avail.position.y + (avail.size.y - h) / 2.0, w, h)
+
+func _scale() -> float:
+	return _deck().size.x / DECK_W
+
 func _room_rect(n: int) -> Rect2:
-	if n < 0 or n >= PLAN.size():
+	if not PLAN.has(n):
 		return Rect2()
 	var d := _deck()
-	var cw := d.size.x / 4.0
-	var ch := d.size.y / 2.0
+	var s := _scale()
 	var p: Rect2 = PLAN[n]
-	return Rect2(d.position.x + p.position.x * cw + 3,
-				 d.position.y + p.position.y * ch + 3,
-				 cw - 6, ch - 6)
+	return Rect2(d.position.x + p.position.x * s + 2.0,
+				 d.position.y + p.position.y * s + 2.0,
+				 p.size.x * s - 4.0, p.size.y * s - 4.0)
 
 func _room_at(p: Vector2) -> int:
 	for i in range(rooms.size()):
@@ -152,12 +176,14 @@ func _room_at(p: Vector2) -> int:
 			return i
 	return -1
 
-# --------------------------------------------------------------- painting
+# ------------------------------------------------------------ painting
 func _draw() -> void:
 	draw_rect(Rect2(Vector2.ZERO, size), BG)
 	_draw_status()
+	_draw_hull()
 	for i in range(rooms.size()):
 		_draw_room(i)
+	_draw_doors()
 	_draw_crew()
 	_draw_console()
 
@@ -170,12 +196,306 @@ func _bar(r: Rect2, frac: float, col: Color) -> void:
 		draw_rect(Rect2(r.position, Vector2(r.size.x * clampf(frac, 0, 1), r.size.y)), col)
 	draw_rect(r, EDGE, false, 1.0)
 
+# THE HULL, DRAWN UNDERNEATH THE ROOMS. A nose that points at the enemy and
+# two engine nacelles at the back, so the ship has a front and the player
+# never has to work out which way it is facing.
+func _draw_hull() -> void:
+	var d := _deck()
+	var s := _scale()
+	var o := d.position
+
+	# Engine nacelles, aft of the engine room.
+	for yy in [0.7, 3.4]:
+		var nac := Rect2(o.x - 0.85 * s, o.y + yy * s, 0.9 * s, 0.7 * s)
+		draw_rect(nac, PANEL.darkened(0.25))
+		draw_rect(nac, EDGE, false, 1.0)
+		# The glow is the engines' power, so a dead engine room stops glowing.
+		var eb := 0
+		if rooms.size() > 2:
+			eb = _i(rooms[2] as Dictionary, "bars")
+		if eb > 0:
+			draw_rect(Rect2(nac.position.x - 0.3 * s, nac.position.y + nac.size.y * 0.25,
+							0.3 * s, nac.size.y * 0.5),
+					  Color(SHIELD.r, SHIELD.g, SHIELD.b, clampf(eb / 4.0, 0.2, 0.9)))
+
+	# THE STERN IS ANGLED TOO. Square corners at the back left two dark
+	# rectangles either side of the engine room that read as empty rooms --
+	# somewhere you might try to send somebody. A hull should have no corner
+	# that looks like a place.
+	var body := PackedVector2Array([
+		o + Vector2(0.0, 0.9) * s,
+		o + Vector2(0.55, 0.0) * s,
+		o + Vector2(7.7, 0.0) * s,
+		o + Vector2(8.6, 1.5) * s,        # nose, upper
+		o + Vector2(9.0, 2.4) * s,        # the point
+		o + Vector2(8.6, 3.3) * s,        # nose, lower
+		o + Vector2(7.7, 4.8) * s,
+		o + Vector2(0.55, 4.8) * s,
+		o + Vector2(0.0, 3.9) * s,
+	])
+	draw_colored_polygon(body, PANEL.darkened(0.45))
+	draw_polyline(body + PackedVector2Array([body[0]]), EDGE, 2.0)
+
+	# THE SHIELD BUBBLE, drawn around the hull, one ring per layer up. This is
+	# the only place shields are a shape rather than a number, and it is the
+	# thing you actually watch: the ring goes and the next shot is on the hull.
+	# AN ELLIPSE, NOT A CIRCLE. A circle wide enough to clear the nose is
+	# twice as tall as the ship, so it left the window at the top and bottom
+	# and read as two unexplained curves rather than as a bubble around
+	# anything. The ring has to hug the hull to be a shield.
+	var sh := _i(ship, "shields")
+	var ctr := d.get_center()
+	for i in range(sh):
+		_ring(ctr, (DECK_W * 0.55 + i * 0.18) * s, (DECK_H * 0.66 + i * 0.18) * s,
+			  Color(SHIELD.r, SHIELD.g, SHIELD.b, 0.55 - i * 0.11))
+
+func _ring(c: Vector2, rx: float, ry: float, col: Color) -> void:
+	var pts := PackedVector2Array()
+	for i in range(65):
+		var a := TAU * float(i) / 64.0
+		pts.append(c + Vector2(cos(a) * rx, sin(a) * ry))
+	draw_polyline(pts, col, 2.0)
+
+func _draw_room(n: int) -> void:
+	var r := _room_rect(n)
+	var room: Dictionary = rooms[n]
+	var oxy := _f(room, "oxygen", 100.0)
+	var s := _scale()
+
+	# VACUUM IS VISIBLE BEFORE IT IS FATAL. A room draining is the cue to move
+	# somebody, and a player who only finds out when the crew die has been
+	# given a puzzle with the clues removed.
+	var floor_col := PANEL.lerp(VACUUM, clampf((100.0 - oxy) / 100.0, 0, 1))
+	draw_rect(r, floor_col)
+
+	# Deck plating, so a big room does not read as a blank slab.
+	var step := 0.5 * s
+	var gx := r.position.x + step
+	while gx < r.position.x + r.size.x - 2:
+		draw_line(Vector2(gx, r.position.y + 2), Vector2(gx, r.position.y + r.size.y - 2),
+				  Color(1, 1, 1, 0.025), 1.0)
+		gx += step
+
+	var fire := _f(room, "fire")
+	if fire > 0.0:
+		_draw_fire(r, fire)
+	if _yes(room, "breach"):
+		_draw_breach(r)
+
+	draw_rect(r, EDGE if n != hover_room else INK, false, 2.0 if n == hover_room else 1.0)
+
+	var sys := str(room.get("system", "none"))
+	_text(r.position + Vector2(7, 15), str(room.get("name", "?")), INK, 11)
+	if sys == "none":
+		return
+
+	_draw_system_glyph(r, sys, _i(room, "bars"))
+
+	# The power pips ARE the button. Click the pip you want lit: clicking the
+	# third pip asks for three bars, clicking a lit pip below the current
+	# level takes power back. One gesture, one command, and the command reads
+	# exactly like what you did.
+	var cap := _i(room, "cap")
+	var bars := _i(room, "bars")
+	var dmg := _i(room, "damage")
+	for i in range(cap):
+		var pr := _pip_rect(n, i)
+		var broken := i >= cap - dmg
+		var col := POWER if i < bars else PANEL
+		if broken:
+			col = BAD.darkened(0.4)
+		draw_rect(pr, col)
+		draw_rect(pr, EDGE, false, 1.0)
+
+func _pip_rect(n: int, i: int) -> Rect2:
+	var r := _room_rect(n)
+	return Rect2(r.position.x + 7 + i * 15, r.position.y + r.size.y - 20, 11, 13)
+
+# FLAMES, NOT A WASH. An orange rectangle says "this room is tinted"; three
+# flame shapes that get taller as it spreads say "this room is burning", and
+# the difference is whether the screen is worth looking at.
+func _draw_fire(r: Rect2, fire: float) -> void:
+	var f := clampf(fire / 100.0, 0.0, 1.0)
+	draw_rect(r, Color(FIRE.r, FIRE.g * 0.6, 0.0, 0.10 + 0.25 * f))
+	var n := 2 + int(f * 4.0)
+	var base := r.position.y + r.size.y - 6
+	for i in range(n):
+		var x := r.position.x + r.size.x * (float(i) + 0.5) / float(n)
+		var h := (8.0 + 22.0 * f)
+		draw_colored_polygon(PackedVector2Array([
+			Vector2(x - 5, base), Vector2(x, base - h), Vector2(x + 5, base)]),
+			Color(FIRE.r, FIRE.g, 0.15, 0.85))
+		draw_colored_polygon(PackedVector2Array([
+			Vector2(x - 2.5, base), Vector2(x, base - h * 0.55), Vector2(x + 2.5, base)]),
+			Color(1.0, 0.88, 0.4, 0.9))
+
+# A HOLE, not a red border. A breach is the one thing on this ship that cannot
+# be repaired by leaving it alone, and it should look like damage.
+func _draw_breach(r: Rect2) -> void:
+	var c := r.get_center()
+	var pts := PackedVector2Array()
+	var rad: float = minf(r.size.x, r.size.y) * 0.22
+	for i in range(9):
+		var a := TAU * float(i) / 9.0
+		var rr: float = rad * (0.55 if i % 2 == 1 else 1.0)
+		pts.append(c + Vector2(cos(a), sin(a)) * rr)
+	draw_colored_polygon(pts, BG)
+	draw_polyline(pts + PackedVector2Array([pts[0]]), BAD, 2.0)
+	draw_rect(r, BAD, false, 2.0)
+
+# WHAT A ROOM IS, AT A GLANCE. Names are drawn too, but a shape is read
+# faster than a word and a player under fire is not reading.
+func _draw_system_glyph(r: Rect2, sys: String, bars: int) -> void:
+	var c := r.get_center() + Vector2(0, -2)
+	var lit: Color = INK if bars > 0 else DIM.darkened(0.3)
+	var u: float = minf(r.size.x, r.size.y) * 0.22
+	match sys:
+		"reactor":
+			draw_arc(c, u, 0, TAU, 24, lit, 2.0)
+			for i in range(6):
+				var a := TAU * float(i) / 6.0
+				draw_line(c + Vector2(cos(a), sin(a)) * u * 1.2,
+						  c + Vector2(cos(a), sin(a)) * u * 1.7, lit, 2.0)
+		"shields":
+			draw_arc(c + Vector2(0, u * 0.6), u * 1.4, PI, TAU, 24, lit, 2.5)
+			draw_arc(c + Vector2(0, u * 0.6), u * 0.9, PI, TAU, 24, lit, 1.5)
+		"engines":
+			for i in range(3):
+				var x := c.x - u + i * u * 0.9
+				draw_polyline(PackedVector2Array([
+					Vector2(x + u * 0.5, c.y - u), Vector2(x - u * 0.2, c.y),
+					Vector2(x + u * 0.5, c.y + u)]), lit, 2.0)
+		"weapons":
+			draw_line(c + Vector2(-u * 1.4, 0), c + Vector2(u * 1.0, 0), lit, 3.0)
+			draw_colored_polygon(PackedVector2Array([
+				Vector2(c.x + u * 0.8, c.y - u * 0.7), Vector2(c.x + u * 1.7, c.y),
+				Vector2(c.x + u * 0.8, c.y + u * 0.7)]), lit)
+		"oxygen":
+			draw_arc(c, u * 1.2, 0, TAU, 24, lit, 2.0)
+			draw_arc(c, u * 0.5, 0, TAU, 16, lit, 1.5)
+		"medbay":
+			draw_rect(Rect2(c.x - u * 0.3, c.y - u, u * 0.6, u * 2.0), lit)
+			draw_rect(Rect2(c.x - u, c.y - u * 0.3, u * 2.0, u * 0.6), lit)
+		"computer":
+			draw_rect(Rect2(c.x - u * 1.2, c.y - u * 0.9, u * 2.4, u * 1.6), Color(0, 0, 0, 0))
+			draw_rect(Rect2(c.x - u * 1.2, c.y - u * 0.9, u * 2.4, u * 1.6), lit, false, 2.0)
+			for i in range(3):
+				var yy := c.y - u * 0.5 + i * u * 0.45
+				draw_line(Vector2(c.x - u * 0.8, yy), Vector2(c.x + u * (0.2 + 0.2 * i), yy), lit, 1.5)
+
+# DOORS ARE ON THE WALLS, which is where doors are. Each room's door is drawn
+# on the edge it shares with the spine corridor, so `door 4 shut` has a place
+# on the screen and sealing a room is something you can SEE, not a state you
+# have to remember.
+func _door_mark(n: int) -> Rect2:
+	if n == 7 or not PLAN.has(n):
+		return Rect2()
+	var d := _deck()
+	var s := _scale()
+	var p: Rect2 = PLAN[n]
+	var spine: Rect2 = PLAN[7]
+	var cx: float = clampf(p.position.x + p.size.x / 2.0,
+						   spine.position.x + 0.3, spine.position.x + spine.size.x - 0.3)
+	var gx := d.position.x + cx * s
+	var gy: float
+	if p.position.y + p.size.y <= spine.position.y + 0.01:
+		gy = d.position.y + (p.position.y + p.size.y) * s      # room is above
+	elif p.position.y >= spine.position.y + spine.size.y - 0.01:
+		gy = d.position.y + p.position.y * s                   # room is below
+	else:
+		# Engines: aft of the spine, so the door is on its forward wall.
+		gx = d.position.x + (p.position.x + p.size.x) * s
+		gy = d.position.y + (spine.position.y + spine.size.y / 2.0) * s
+		return Rect2(gx - 3, gy - 0.35 * s, 6, 0.7 * s)
+	return Rect2(gx - 0.35 * s, gy - 3, 0.7 * s, 6)
+
+func _draw_doors() -> void:
+	for n in range(rooms.size()):
+		var m := _door_mark(n)
+		if m.size.x <= 0:
+			continue
+		var shut := str((rooms[n] as Dictionary).get("door", "open")) != "open"
+		if shut:
+			draw_rect(m, BAD)
+			draw_rect(m, BAD.lightened(0.3), false, 1.0)
+		else:
+			# An open door is a gap in the wall with two jambs, which is what
+			# an open door looks like on every deck plan ever drawn.
+			draw_rect(m, floor_tint())
+			if m.size.x > m.size.y:
+				draw_line(m.position, m.position + Vector2(0, m.size.y), HULL, 2.0)
+				draw_line(m.position + Vector2(m.size.x, 0), m.position + m.size, HULL, 2.0)
+			else:
+				draw_line(m.position, m.position + Vector2(m.size.x, 0), HULL, 2.0)
+				draw_line(m.position + Vector2(0, m.size.y), m.position + m.size, HULL, 2.0)
+
+func floor_tint() -> Color:
+	return PANEL
+
+# WHERE A PERSON STANDS. Inside the room, spread out, so two people in the
+# reactor are two dots and not one dot on top of another.
+func _crew_pos(name: String) -> Vector2:
+	var idx := 0
+	var rn := -1
+	for raw in crew:
+		var c: Dictionary = raw
+		if not _yes(c, "alive"):
+			continue
+		if str(c.get("name", "")) == name:
+			rn = _i(c, "room")
+			break
+		idx += 1
+	if rn < 0:
+		return Vector2.ZERO
+	# Count who else is in that room ahead of this one.
+	var before := 0
+	for raw in crew:
+		var c: Dictionary = raw
+		if not _yes(c, "alive"):
+			continue
+		if str(c.get("name", "")) == name:
+			break
+		if _i(c, "room") == rn:
+			before += 1
+	var r := _room_rect(rn)
+	var s := _scale()
+	return Vector2(r.position.x + 0.35 * s + before * 0.55 * s,
+				   r.position.y + r.size.y - 0.72 * s)
+
+func _draw_crew() -> void:
+	for raw in crew:
+		var c: Dictionary = raw
+		if not _yes(c, "alive"):
+			continue
+		var name := str(c.get("name", "?"))
+		var at := _crew_pos(name)
+		if at == Vector2.ZERO:
+			continue
+		var hp := _f(c, "health", 100.0)
+		var col := HULL if hp > 60 else (POWER if hp > 30 else BAD)
+		# A person, not a dot: a head and shoulders, so a crew member reads as
+		# somebody standing in a room rather than a status light.
+		draw_circle(at + Vector2(0, -7), 4.0, col)
+		draw_colored_polygon(PackedVector2Array([
+			at + Vector2(-5, 4), at + Vector2(-3.5, -3),
+			at + Vector2(3.5, -3), at + Vector2(5, 4)]), col)
+		if name == picked:
+			draw_arc(at, 13, 0, TAU, 24, POWER, 2.0)
+		# A BACKING PLATE UNDER THE NAME. Rooms have labels too, and in the
+		# corridor -- which is one deck-unit tall -- a crew name landed on top
+		# of the word "corridor" and neither was readable. The name has to
+		# win: `send Vane 2` needs the player to know which figure is Vane.
+		var nw := mono.get_string_size(name, HORIZONTAL_ALIGNMENT_LEFT, -1, 10).x
+		draw_rect(Rect2(at.x - nw / 2.0 - 2, at.y + 6, nw + 4, 12), Color(0, 0, 0, 0.55))
+		_text(at + Vector2(-nw / 2.0, 16), name, col, 10)
+
+# ------------------------------------------------- the status strip
 func _draw_status() -> void:
 	draw_rect(Rect2(0, 0, size.x, 52), PANEL)
 	draw_line(Vector2(0, 52), Vector2(size.x, 52), EDGE, 1.0)
 
 	var hull := _f(ship, "hull")
-	var hull_max := maxf(1.0, _f(ship, "hull_max", 16.0))
+	var hull_max: float = maxf(1.0, _f(ship, "hull_max", 16.0))
 	_text(Vector2(14, 18), str(ship.get("ship", "Kestrel")), INK, 13)
 	_bar(Rect2(14, 26, 150, 12), hull / hull_max, HULL if hull > hull_max * 0.35 else BAD)
 	_text(Vector2(170, 36), "hull %d" % int(hull), DIM, 11)
@@ -199,85 +519,28 @@ func _draw_status() -> void:
 		draw_rect(r, POWER if i < free else PANEL)
 		draw_rect(r, EDGE, false, 1.0)
 
-	# THE ENEMY, on the same screen, in the same units. FTL puts them in a
-	# separate panel you have to look at; there is one raider and it fits.
-	var ex := size.x - 250.0
-	_text(Vector2(ex, 18), str(enemy.get("name", "raider")), BAD, 13)
-	_bar(Rect2(ex, 26, 110, 12), _f(enemy, "hull") / maxf(1.0, _f(enemy, "hull_max", 18.0)), BAD)
-	_text(Vector2(ex + 120, 20), "their gun", DIM, 10)
-	_bar(Rect2(ex + 120, 26, 110, 12), _f(enemy, "charge") / 100.0, FIRE)
+	# THE RAIDER, DRAWN AS A SHIP. It is the thing shooting at you and it was
+	# two bars and a word; now it is a silhouette pointing back at you, so the
+	# top of the screen has two ships on it and the fight has a direction.
+	var ex := size.x - 276.0
+	var nose := Vector2(ex - 14, 26)
+	draw_colored_polygon(PackedVector2Array([
+		nose, nose + Vector2(22, -11), nose + Vector2(34, -6),
+		nose + Vector2(34, 6), nose + Vector2(22, 11)]), BAD.darkened(0.25))
+	draw_polyline(PackedVector2Array([
+		nose, nose + Vector2(22, -11), nose + Vector2(34, -6),
+		nose + Vector2(34, 6), nose + Vector2(22, 11), nose]), BAD, 1.5)
+
+	_text(Vector2(ex + 40, 18), str(enemy.get("name", "raider")), BAD, 12)
+	_bar(Rect2(ex + 40, 26, 96, 12),
+		 _f(enemy, "hull") / maxf(1.0, _f(enemy, "hull_max", 18.0)), BAD)
+	_text(Vector2(ex + 144, 20), "their gun", DIM, 10)
+	_bar(Rect2(ex + 144, 26, 96, 12), _f(enemy, "charge") / 100.0, FIRE)
 
 	var clock := _i(ship, "clock")
-	var st := "PAUSED — space to fly" if _yes(ship, "paused") else "%d:%02d" % [clock / 60, clock % 60]
-	_text(Vector2(size.x / 2.0 - 60, 46), st, POWER if _yes(ship, "paused") else DIM, 11)
-
-func _draw_room(n: int) -> void:
-	var r := _room_rect(n)
-	var room: Dictionary = rooms[n]
-	var oxy := _f(room, "oxygen", 100.0)
-
-	# VACUUM IS VISIBLE BEFORE IT IS FATAL. A room draining is the cue to move
-	# somebody, and a player who only finds out when the crew die has been
-	# given a puzzle with the clues removed.
-	var floor_col := PANEL.lerp(VACUUM, clampf((100.0 - oxy) / 100.0, 0, 1))
-	draw_rect(r, floor_col)
-
-	var fire := _f(room, "fire")
-	if fire > 0.0:
-		draw_rect(Rect2(r.position, Vector2(r.size.x, r.size.y)), Color(FIRE.r, FIRE.g, FIRE.b, clampf(fire / 100.0, 0.15, 0.75)))
-	if _yes(room, "breach"):
-		draw_rect(r, BAD, false, 3.0)
-	draw_rect(r, EDGE if n != hover_room else INK, false, 1.0)
-
-	var sys := str(room.get("system", "none"))
-	_text(r.position + Vector2(8, 16), str(room.get("name", "?")), INK, 12)
-	if sys == "none":
-		return
-
-	# The power pips ARE the button. Click the pip you want lit: clicking the
-	# third pip asks for three bars, clicking a lit pip below the current
-	# level takes power back. One gesture, one command, and the command reads
-	# exactly like what you did.
-	var cap := _i(room, "cap")
-	var bars := _i(room, "bars")
-	var dmg := _i(room, "damage")
-	for i in range(cap):
-		var pr := _pip_rect(n, i)
-		var broken := i >= cap - dmg
-		var col := POWER if i < bars else PANEL
-		if broken:
-			col = BAD.darkened(0.4)
-		draw_rect(pr, col)
-		draw_rect(pr, EDGE, false, 1.0)
-
-	if fire > 0.0:
-		_text(r.position + Vector2(r.size.x - 34, 16), "FIRE", FIRE, 11)
-
-func _pip_rect(n: int, i: int) -> Rect2:
-	var r := _room_rect(n)
-	return Rect2(r.position.x + 8 + i * 16, r.position.y + r.size.y - 24, 12, 14)
-
-func _draw_crew() -> void:
-	# Crew stack along the bottom of their room, and the selected one gets a
-	# ring. Names are drawn because `send Vane 2` needs the player to know
-	# which dot is Vane.
-	var per_room := {}
-	for raw in crew:
-		var c: Dictionary = raw
-		if not _yes(c, "alive"):
-			continue
-		var rn := _i(c, "room")
-		var idx := int(per_room.get(rn, 0))
-		per_room[rn] = idx + 1
-		var rr := _room_rect(rn)
-		var at := rr.position + Vector2(rr.size.x - 22, 34 + idx * 22)
-		var name := str(c.get("name", "?"))
-		var hp := _f(c, "health", 100.0)
-		var col := INK if hp > 40 else BAD
-		draw_circle(at, 7, col)
-		if name == picked:
-			draw_arc(at, 11, 0, TAU, 24, POWER, 2.0)
-		_text(at + Vector2(-9 - mono.get_string_size(name, HORIZONTAL_ALIGNMENT_LEFT, -1, 10).x, 4), name, col, 10)
+	var paused := _yes(ship, "paused")
+	var st := "PAUSED — space to fly" if paused else "%d:%02d" % [clock / 60, clock % 60]
+	_text(Vector2(size.x / 2.0 - 60, 46), st, POWER if paused else DIM, 11)
 
 # THE CONSOLE. Everything above prints into here, and here is the only place
 # the player is ever taught the syntax.
@@ -342,15 +605,16 @@ func _gui_input(e: InputEvent) -> void:
 	if mb.button_index != MOUSE_BUTTON_LEFT:
 		return
 
-	# A crew dot first: clicking a person picks them up, clicking them again
-	# puts them down.
+	# A crew member first: clicking a person picks them up, clicking them
+	# again puts them down. Hit-tested against where they were DRAWN, which is
+	# the only position a player can be aiming at.
 	for raw in crew:
 		var c: Dictionary = raw
 		if not _yes(c, "alive"):
 			continue
-		var rr := _room_rect(_i(c, "room"))
-		if rr.has_point(mb.position) and mb.position.x > rr.position.x + rr.size.x - 40:
-			var nm := str(c.get("name", ""))
+		var nm := str(c.get("name", ""))
+		var at := _crew_pos(nm)
+		if at != Vector2.ZERO and mb.position.distance_to(at) < 14.0:
 			picked = "" if picked == nm else nm
 			queue_redraw()
 			return

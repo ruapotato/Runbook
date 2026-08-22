@@ -31,13 +31,19 @@ func _tick() -> void:
 
 			# A FIGHT ALREADY IN TROUBLE, because a screenshot of a ship at
 			# full hull with nothing on fire shows none of what this is.
+			# A FIGHT IN TROUBLE BUT STILL BEING FLOWN. Long enough that the
+			# raider has landed something and a fire has caught; short enough
+			# that the crew are alive, because a picture of a ship with
+			# nobody on it shows none of what this is.
 			api.exec("power shields 2")
 			api.exec("power weapons 2")
-			api.exec("power computer 2")
+			api.exec("power computer 1")
+			api.exec("power oxygen 2")
 			api.exec("resume")
-			for i in range(300):
+			for i in range(180):
 				api.exec("tick 0.25")
 			api.exec("pause")
+			api.exec("send Vane 7")
 
 			desk._launch("Bridge")
 			desk._launch("Terminal")
